@@ -39,6 +39,31 @@ Each device owns one HackRF. The sender transmits DATA, switches to RX, and wait
 
 TV broadcast around 491/600 MHz, cellular at 750–850 MHz, ISM at 915 MHz. The old per-step scanner took ~10 subprocess launches for 10 MHz — `hackrf_sweep` covers 1300 MHz in under a second.
 
+## Protocol Modes
+
+HackRFComs supports multiple RF protocols through a unified launcher:
+
+```bash
+python3 hackrf.py adsb                      # ADS-B aircraft tracking (1090 MHz)
+python3 hackrf.py adsb --duration 60        # Capture for 60 seconds
+python3 hackrf.py scan 400 1700 --plot      # Spectrum scanner
+python3 hackrf.py comms "Hello"             # Send message (OOK, 915 MHz)
+python3 hackrf.py comms --rx                # Receive mode
+python3 hackrf.py demo "test message"       # Original hello world demo
+```
+
+| Protocol | Frequency | Status |
+|----------|-----------|--------|
+| `adsb` | 1090 MHz | Working — Mode S decoder with callsign, altitude, position, velocity |
+| `comms` | 915 MHz | Working — OOK with ACK/NACK protocol |
+| `scan` | 1 MHz–6 GHz | Working — wideband spectrum scanner |
+| `fm` | 88–108 MHz | Planned |
+| `ais` | 162 MHz | Planned |
+| `acars` | 131.55 MHz | Planned |
+| `noaa` | 137 MHz | Planned |
+
+Use `--device 0` or `--device 1` to select which HackRF to use.
+
 ## Quick Start
 
 ```bash
@@ -70,6 +95,7 @@ python3 visualize_protocol.py             # Protocol timeline
 
 | File | Purpose |
 |------|---------|
+| `hackrf.py` | Multi-protocol CLI launcher |
 | `config.py` | Device serials, frequency, sample rate, gain, framing constants |
 | `modulation.py` | OOK modulation/demodulation, frame building, CRC-16 |
 | `demo.py` | Simple TX→RX hello world (two devices, threaded) |
@@ -78,6 +104,11 @@ python3 visualize_protocol.py             # Protocol timeline
 | `visualize.py` | 4-panel signal analysis (spectrogram, envelope, OOK, bits) |
 | `visualize_protocol.py` | Protocol round-trip timeline visualization |
 | `streaming.py` | Experimental streaming demodulator (WIP) |
+| `protocols/adsb.py` | ADS-B Mode S decoder (1090 MHz) |
+| `protocols/ais.py` | AIS marine tracking (stub) |
+| `protocols/fm.py` | FM radio demod (stub) |
+| `protocols/acars.py` | ACARS aircraft messages (stub) |
+| `protocols/noaa.py` | NOAA weather satellite (stub) |
 
 ## How the Modulation Works
 
