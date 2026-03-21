@@ -82,6 +82,26 @@ def cmd_fm(args):
     fm.run(config, duration=args.duration, device=device, freq=freq)
 
 
+def cmd_flipper(args):
+    import subprocess
+    tools_dir = os.path.join(os.path.dirname(__file__), "tools")
+    if args.action == "encode":
+        cmd = [sys.executable, os.path.join(tools_dir, "flipper_encode.py")]
+        if args.message:
+            cmd.append(args.message)
+        if args.output:
+            cmd.append(args.output)
+        subprocess.run(cmd)
+    elif args.action == "decode":
+        if not args.message:
+            print("Usage: hackrf.py flipper decode <file.sub>")
+            return
+        subprocess.run([sys.executable, os.path.join(tools_dir, "flipper_decode.py"),
+                        args.message])
+    else:
+        print("Usage: hackrf.py flipper {encode|decode}")
+
+
 def cmd_stub(protocol_name):
     """Return a handler for a stub protocol."""
     def handler(args):
@@ -146,6 +166,14 @@ def main():
                        help="Station frequency in MHz (e.g. 101.5)")
     p_fm.add_argument("--duration", type=float, default=10.0)
 
+    # flipper
+    p_flip = sub.add_parser("flipper", help="Flipper Zero .sub encode/decode")
+    p_flip.add_argument("action", choices=["encode", "decode"],
+                         help="encode message to .sub, or decode .sub file")
+    p_flip.add_argument("message", nargs="?", default=None,
+                         help="Message (encode) or .sub file path (decode)")
+    p_flip.add_argument("--output", "-o", default=None, help="Output .sub path")
+
     # Stub protocols
     for proto in ("ais", "acars", "noaa"):
         p = sub.add_parser(proto, help=PROTOCOLS[proto]["description"])
@@ -173,6 +201,7 @@ def main():
         "ais": cmd_stub("ais"),
         "acars": cmd_stub("acars"),
         "noaa": cmd_stub("noaa"),
+        "flipper": cmd_flipper,
     }
 
     handler = dispatch.get(args.mode)
