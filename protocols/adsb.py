@@ -162,10 +162,12 @@ def decode_altitude(msg_bytes: bytes) -> int | None:
         return None
 
 
-def decode_cpr_lat_lon(even_msg: bytes, odd_msg: bytes) -> tuple[float, float] | None:
+def decode_cpr_lat_lon(even_msg: bytes, odd_msg: bytes,
+                       most_recent_odd: bool = False) -> tuple[float, float] | None:
     """
     Decode CPR (Compact Position Reporting) latitude/longitude from
-    an even/odd message pair. Returns (lat, lon) or None.
+    an even/odd message pair. Uses the most recent message as reference
+    for best accuracy. Returns (lat, lon) or None.
     """
     import math
 
@@ -218,20 +220,21 @@ def decode_cpr_lat_lon(even_msg: bytes, odd_msg: bytes) -> tuple[float, float] |
     if cpr_nl(lat_even_decoded) != cpr_nl(lat_odd_decoded):
         return None
 
-    # Use the most recent message for final position
-    # We'll use the even message as reference (caller can swap order)
-    lat = lat_even_decoded
-    nl = cpr_nl(lat)
-
-    # Longitude
-    if nl > 0:
+    # Use the most recent message as reference for best accuracy
+    if most_recent_odd:
+        lat = lat_odd_decoded
+        nl = cpr_nl(lat)
+        ni = max(nl - 1, 1)
+        dlon = 360.0 / ni if ni > 0 else 360.0
+        m = int(math.floor(lon_even_f * (nl - 1) - lon_odd_f * nl + 0.5))
+        lon = dlon * ((m % ni) + lon_odd_f)
+    else:
+        lat = lat_even_decoded
+        nl = cpr_nl(lat)
         ni = max(nl, 1)
         dlon = 360.0 / ni
-    else:
-        dlon = 360.0
-
-    m = int(math.floor(lon_even_f * (nl - 1) - lon_odd_f * nl + 0.5))
-    lon = dlon * ((m % max(ni, 1)) + lon_even_f)
+        m = int(math.floor(lon_even_f * (nl - 1) - lon_odd_f * nl + 0.5))
+        lon = dlon * ((m % ni) + lon_even_f)
 
     if lon >= 180:
         lon -= 360
@@ -317,7 +320,8 @@ def decode_message(msg_bytes: bytes, aircraft: dict) -> str | None:
 
         # Try to decode position if we have both even and odd
         if ac["even"] is not None and ac["odd"] is not None:
-            pos = decode_cpr_lat_lon(ac["even"], ac["odd"])
+            pos = decode_cpr_lat_lon(ac["even"], ac["odd"],
+                                     most_recent_odd=bool(cpr_odd))
             if pos:
                 ac["lat"], ac["lon"] = pos
                 parts.append(f"Lat:{pos[0]:.4f}")
