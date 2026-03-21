@@ -60,31 +60,19 @@ def frame_to_iq(frame: bytes) -> np.ndarray:
     return np.concatenate([iq, tail])
 
 
-def demodulate(iq_data: np.ndarray) -> bytes | None:
-    """
-    Mix down to carrier offset, LPF, envelope detect, recover symbol timing,
-    find sync word, extract and verify payload.
-    """
-    i_raw = iq_data[0::2].astype(np.float64)
-    q_raw = iq_data[1::2].astype(np.float64)
+def _demod_at_offset(csig: np.ndarray, offset_hz: float,
+                     b_lpf, a_lpf) -> bytes | None:
+    """Try to demodulate at a specific carrier offset frequency."""
+    t = np.arange(len(csig), dtype=np.float64) / SAMPLE_RATE
+    mixed = csig * np.exp(-1j * 2 * np.pi * offset_hz * t)
 
-    # Mix down: shift carrier offset to DC
-    t = np.arange(len(i_raw), dtype=np.float64) / SAMPLE_RATE
-    csig = i_raw + 1j * q_raw
-    mixed = csig * np.exp(-1j * 2 * np.pi * CARRIER_OFFSET * t)
-
-    # Low-pass filter
-    b, a = dsp.butter(4, 30_000 / (SAMPLE_RATE / 2), btype='low')
-    filt = dsp.filtfilt(b, a, mixed)
+    filt = dsp.filtfilt(b_lpf, a_lpf, mixed)
     env = np.abs(filt)
 
     peak = np.max(env)
     if peak < 5.0:
-        print(f"  [demod] No signal (peak={peak:.1f})")
         return None
 
-    # Adaptive threshold: use noise floor + margin instead of peak-relative.
-    # Estimate noise as the median (most of the capture is silence).
     noise_floor = np.median(env)
     threshold = noise_floor + (peak - noise_floor) * 0.3
     above = np.where(env > threshold)[0]
@@ -92,12 +80,8 @@ def demodulate(iq_data: np.ndarray) -> bytes | None:
         return None
     burst_start = above[0]
 
-    # Try all possible symbol phase offsets within one symbol period
-    # to find the best alignment
     SPS = SAMPLES_PER_SYMBOL
-
     for phase in range(0, SPS, SPS // 10):
-        # Sample envelope at symbol centers
         offset = burst_start - SPS // 2 + phase
         offset = max(0, offset)
         indices = np.arange(offset + SPS // 2, len(env), SPS)
@@ -109,6 +93,40 @@ def demodulate(iq_data: np.ndarray) -> bytes | None:
         result = _try_decode(bits)
         if result is not None:
             return result
+
+    return None
+
+
+def demodulate(iq_data: np.ndarray) -> bytes | None:
+    """
+    Mix down to carrier offset, LPF, envelope detect, recover symbol timing,
+    find sync word, extract and verify payload.
+
+    Tries the primary 100 kHz offset first (HackRF-to-HackRF), then scans
+    nearby offsets to handle other transmitters (e.g. Flipper Zero CC1101
+    which uses a ~35 kHz offset).
+    """
+    i_raw = iq_data[0::2].astype(np.float64)
+    q_raw = iq_data[1::2].astype(np.float64)
+    csig = i_raw + 1j * q_raw
+
+    b, a = dsp.butter(4, 30_000 / (SAMPLE_RATE / 2), btype='low')
+
+    # Primary: HackRF's 100 kHz carrier offset
+    result = _demod_at_offset(csig, CARRIER_OFFSET, b, a)
+    if result is not None:
+        return result
+
+    # Fallback: scan offsets to find signals from other transmitters
+    # (Flipper Zero CC1101 OOK lands at ~35 kHz offset)
+    for offset_hz in range(0, 200_000, 5_000):
+        for sign in [1, -1]:
+            off = offset_hz * sign
+            if off == CARRIER_OFFSET or (off == 0 and sign == -1):
+                continue
+            result = _demod_at_offset(csig, off, b, a)
+            if result is not None:
+                return result
 
     return None
 
