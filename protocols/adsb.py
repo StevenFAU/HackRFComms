@@ -344,16 +344,40 @@ def decode_message(msg_bytes: bytes, aircraft: dict) -> str | None:
     return "  ".join(parts)
 
 
+def _downsample_to_halfbits(envelope: np.ndarray, half_bit_samples: int) -> np.ndarray:
+    """Downsample envelope to one value per half-bit period (0.5 µs) using averaging.
+    This is the key optimization — converts millions of samples to a manageable array."""
+    n = len(envelope)
+    # Trim to exact multiple of half_bit_samples
+    trim = n - (n % half_bit_samples)
+    reshaped = envelope[:trim].reshape(-1, half_bit_samples)
+    return reshaped.mean(axis=1)
+
+
 def decode_iq(envelope: np.ndarray, sample_rate: int) -> list[str]:
     """Process envelope to find and decode ADS-B messages."""
-    samples_per_us = sample_rate / 1_000_000  # 2 samples per µs at 2 MS/s
-    samples_per_bit = int(2 * samples_per_us)  # 2 samples per 1 µs bit
-    preamble_samples = int(8 * 2 * samples_per_us)  # 16 samples for preamble
-    msg_samples = LONG_MSG_BITS * samples_per_bit  # 224 samples for 112-bit msg
+    spu = sample_rate / 1_000_000  # samples per µs
+    half_bit_samples = max(int(round(0.5 * spu)), 1)  # samples per 0.5 µs
 
-    # Adaptive noise floor
-    noise_floor = np.mean(envelope)
-    threshold = noise_floor * 2.0
+    print(f"[ADS-B] Sample rate: {sample_rate/1e6:.0f} MS/s  "
+          f"({spu:.0f} samples/µs, {half_bit_samples} samples/half-bit)")
+
+    # Downsample to half-bit resolution — one value per 0.5 µs
+    print("[ADS-B] Downsampling to half-bit resolution...")
+    hb = _downsample_to_halfbits(envelope, half_bit_samples)
+    print(f"[ADS-B] {len(envelope)} samples -> {len(hb)} half-bit cells")
+
+    # Now everything works in half-bit units:
+    # Preamble = 16 half-bits, bit = 2 half-bits, message = 224 half-bits
+    preamble_hb = 16
+    msg_hb = LONG_MSG_BITS * 2  # 224 half-bits
+
+    # Noise floor from 70th percentile of subsampled data
+    sorted_hb = np.sort(hb[::10])
+    noise_floor = sorted_hb[int(len(sorted_hb) * 0.7)]
+    threshold = noise_floor * 1.5
+
+    print(f"[ADS-B] Noise floor: {noise_floor:.1f}  Threshold: {threshold:.1f}")
 
     aircraft = {}
     messages = []
@@ -361,63 +385,56 @@ def decode_iq(envelope: np.ndarray, sample_rate: int) -> list[str]:
     crc_fail = 0
     preamble_hits = 0
 
+    # Preamble pattern in half-bit units:
+    # 1,0,1,0,0,0,0,1,0,1,0,0,0,0,0,0
+    # High positions: 0, 2, 7, 9
+    # Low positions: 1, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14, 15
+    hp = np.array([0, 2, 7, 9])
+    lp = np.array([1, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14, 15])
+
     i = 0
-    end = len(envelope) - preamble_samples - msg_samples
+    end = len(hb) - preamble_hb - msg_hb
 
     while i < end:
-        # Quick energy check — skip low-signal regions
-        if envelope[i] < threshold:
+        # Quick energy check
+        if hb[i] < threshold:
             i += 1
             continue
 
-        # Correlate with preamble pattern
-        segment = envelope[i:i + preamble_samples]
-        # Normalize segment
-        seg_max = segment.max()
-        if seg_max < threshold:
+        # Check preamble shape
+        pvals = hb[i:i + preamble_hb]
+
+        high_mean = pvals[hp].mean()
+        low_mean = pvals[lp].mean()
+
+        # High pulses must be well above lows
+        if high_mean < threshold or high_mean / max(low_mean, 0.1) < 2.0:
             i += 1
             continue
 
-        seg_norm = segment / seg_max
-
-        # Check preamble shape: high at expected positions, low elsewhere
-        # Preamble: positions 0,2,7,9 should be high; others low
-        highs = seg_norm[0] + seg_norm[2] + seg_norm[7] + seg_norm[9]
-        lows = (seg_norm[1] + seg_norm[3] + seg_norm[4] + seg_norm[5] +
-                seg_norm[6] + seg_norm[8] + seg_norm[10] + seg_norm[11] +
-                seg_norm[12] + seg_norm[13] + seg_norm[14] + seg_norm[15])
-
-        if highs < 2.5 or lows > 4.0:
+        # Each high must be above midpoint
+        mid = (high_mean + low_mean) / 2
+        if np.any(pvals[hp] < mid):
             i += 1
             continue
 
         preamble_hits += 1
 
-        # Extract bits using PPM: compare first and second half of each bit period
-        bit_start = i + preamble_samples
-        bits = []
-        valid = True
+        # Extract 112 bits: for each bit, compare its two half-bit cells
+        bit_start = i + preamble_hb
+        bit_end = bit_start + msg_hb
 
-        for b in range(LONG_MSG_BITS):
-            pos = bit_start + b * samples_per_bit
-            if pos + samples_per_bit > len(envelope):
-                valid = False
-                break
-            # First half vs second half of bit period
-            first_half = envelope[pos]
-            second_half = envelope[pos + 1] if samples_per_bit >= 2 else 0
-
-            if first_half > second_half:
-                bits.append(1)
-            else:
-                bits.append(0)
-
-        if not valid or len(bits) < LONG_MSG_BITS:
+        if bit_end > len(hb):
             i += 1
             continue
 
+        msg_hb_vals = hb[bit_start:bit_end]
+        # Reshape to (112, 2): first_half vs second_half for each bit
+        bit_pairs = msg_hb_vals.reshape(LONG_MSG_BITS, 2)
+        bits = (bit_pairs[:, 0] > bit_pairs[:, 1]).astype(np.uint8)
+
         # Convert to bytes and check CRC
-        msg_bytes = bits_to_bytes(bits)
+        msg_bytes = bits_to_bytes(bits.tolist())
 
         if check_crc(msg_bytes):
             crc_pass += 1
@@ -426,7 +443,7 @@ def decode_iq(envelope: np.ndarray, sample_rate: int) -> list[str]:
                 messages.append(result)
                 print(result)
             # Skip past this message
-            i = bit_start + LONG_MSG_BITS * samples_per_bit
+            i = bit_end
         else:
             crc_fail += 1
             i += 1

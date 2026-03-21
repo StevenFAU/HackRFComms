@@ -27,7 +27,7 @@ SYNC_WORD = bytes([0x2D, 0xD4])  # Sync word to mark frame start
 PROTOCOLS = {
     "adsb": {
         "center_freq": 1_090_000_000,
-        "sample_rate": 2_000_000,
+        "sample_rate": 8_000_000,
         "lna_gain": 32,
         "vga_gain": 40,
         "bandwidth": 1_750_000,
