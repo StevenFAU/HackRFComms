@@ -8,7 +8,6 @@ Raw files are saved so you can open them in inspectrum / GNU Radio.
 import sys
 import os
 import time
-import tempfile
 import subprocess
 import threading
 import numpy as np
@@ -21,16 +20,38 @@ from modulation import build_frame, frame_to_iq, demodulate
 IQ_DIR = os.path.join(os.path.dirname(__file__), "iq_dumps")
 
 
+def _run_hackrf(cmd, duration, label):
+    """Run hackrf_transfer for a duration, then clean up reliably."""
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except FileNotFoundError:
+        print(f"[{label}] hackrf_transfer not found — is it installed?")
+        return False
+
+    time.sleep(duration)
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        print(f"[{label}] Process didn't stop, killing...")
+        proc.kill()
+        proc.wait()
+
+    ret = proc.returncode
+    if ret and ret != -15:  # -15 = SIGTERM, expected
+        output = proc.stdout.read().decode(errors="replace").strip()
+        print(f"[{label}] hackrf_transfer exited {ret}: {output}")
+        return False
+    return True
+
+
 def capture_rx(path: str, duration: float):
     cmd = [
         "hackrf_transfer", "-d", RX_SERIAL, "-r", path,
         "-f", str(CENTER_FREQ), "-s", str(SAMPLE_RATE),
         "-l", str(LNA_GAIN), "-g", str(VGA_GAIN), "-a", "1",
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    time.sleep(duration)
-    proc.terminate()
-    proc.wait(timeout=5)
+    return _run_hackrf(cmd, duration, "RX")
 
 
 def transmit(iq_path: str, duration: float):
@@ -39,10 +60,7 @@ def transmit(iq_path: str, duration: float):
         "-f", str(CENTER_FREQ), "-s", str(SAMPLE_RATE),
         "-x", str(TX_VGA_GAIN), "-a", "1",
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    time.sleep(duration)
-    proc.terminate()
-    proc.wait(timeout=5)
+    return _run_hackrf(cmd, duration, "TX")
 
 
 def main():

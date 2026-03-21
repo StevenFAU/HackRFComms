@@ -1,3 +1,5 @@
 iq_dumps/
 __pycache__/
 *.pyc
+firmware/
+working_backup/

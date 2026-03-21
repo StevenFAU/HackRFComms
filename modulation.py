@@ -11,6 +11,10 @@ from config import SAMPLES_PER_SYMBOL, SAMPLE_RATE, PREAMBLE, SYNC_WORD
 # Offset carrier so the signal isn't sitting at DC in baseband
 CARRIER_OFFSET = 100_000  # 100 kHz
 
+# TX amplitude — must stay within int8 range [-128, 127]
+TX_AMPLITUDE = 120
+assert TX_AMPLITUDE <= 127, f"TX_AMPLITUDE {TX_AMPLITUDE} would overflow int8"
+
 
 def _crc16(data: bytes) -> int:
     crc = 0xFFFF
@@ -37,12 +41,19 @@ def frame_to_iq(frame: bytes) -> np.ndarray:
     envelope = np.repeat(bits, SAMPLES_PER_SYMBOL).astype(np.float64)
 
     t = np.arange(len(envelope), dtype=np.float64) / SAMPLE_RATE
-    carrier_i = np.cos(2 * np.pi * CARRIER_OFFSET * t) * 120.0
-    carrier_q = np.sin(2 * np.pi * CARRIER_OFFSET * t) * 120.0
+    carrier_i = np.cos(2 * np.pi * CARRIER_OFFSET * t) * TX_AMPLITUDE
+    carrier_q = np.sin(2 * np.pi * CARRIER_OFFSET * t) * TX_AMPLITUDE
+
+    sig_i = carrier_i * envelope
+    sig_q = carrier_q * envelope
+
+    # Check for clipping before cast
+    if np.any(np.abs(sig_i) > 127) or np.any(np.abs(sig_q) > 127):
+        raise OverflowError(f"IQ samples exceed int8 range — lower TX_AMPLITUDE (currently {TX_AMPLITUDE})")
 
     iq = np.empty(len(envelope) * 2, dtype=np.int8)
-    iq[0::2] = (carrier_i * envelope).astype(np.int8)
-    iq[1::2] = (carrier_q * envelope).astype(np.int8)
+    iq[0::2] = sig_i.astype(np.int8)
+    iq[1::2] = sig_q.astype(np.int8)
 
     # Silent tail between repeats
     tail = np.zeros(SAMPLES_PER_SYMBOL * 32, dtype=np.int8)
@@ -72,8 +83,10 @@ def demodulate(iq_data: np.ndarray) -> bytes | None:
         print(f"  [demod] No signal (peak={peak:.1f})")
         return None
 
-    # Find burst start: first sample above 30% of peak
-    threshold = peak * 0.3
+    # Adaptive threshold: use noise floor + margin instead of peak-relative.
+    # Estimate noise as the median (most of the capture is silence).
+    noise_floor = np.median(env)
+    threshold = noise_floor + (peak - noise_floor) * 0.3
     above = np.where(env > threshold)[0]
     if len(above) == 0:
         return None
@@ -81,12 +94,11 @@ def demodulate(iq_data: np.ndarray) -> bytes | None:
 
     # Try all possible symbol phase offsets within one symbol period
     # to find the best alignment
-    best_payload = None
     SPS = SAMPLES_PER_SYMBOL
 
     for phase in range(0, SPS, SPS // 10):
         # Sample envelope at symbol centers
-        offset = burst_start - SPS // 2 + phase  # back up half a symbol, add phase
+        offset = burst_start - SPS // 2 + phase
         offset = max(0, offset)
         indices = np.arange(offset + SPS // 2, len(env), SPS)
         if len(indices) < 100:
