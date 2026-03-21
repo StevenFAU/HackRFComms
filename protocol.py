@@ -26,7 +26,7 @@ TYPE_ACK = 0x02
 TYPE_NACK = 0x03
 
 MAX_RETRIES = 3
-ACK_TIMEOUT = 20.0  # seconds to wait for ACK (receiver needs time to capture, decode, and reply)
+ACK_TIMEOUT = 6.0  # seconds to wait for ACK
 
 
 def _run_hackrf(cmd, duration, label):
@@ -82,7 +82,7 @@ def _tx_iq(frame: bytes, serial: str, repeats: int = 5):
     path = f"/tmp/hackrf_tx_{os.getpid()}.iq"
     with open(path, "wb") as f:
         f.write(iq)
-    duration = max((len(iq) / (SAMPLE_RATE * 2)) * 1.5, 2.0)
+    duration = max((len(iq) / (SAMPLE_RATE * 2)) * 1.5, 0.5)
     cmd = [
         "hackrf_transfer", "-d", serial, "-t", path,
         "-f", str(CENTER_FREQ), "-s", str(SAMPLE_RATE),
@@ -91,9 +91,19 @@ def _tx_iq(frame: bytes, serial: str, repeats: int = 5):
     return _run_hackrf(cmd, duration, "TX")
 
 
-def _rx_capture(serial: str, duration: float) -> np.ndarray | None:
-    """Capture IQ data and return as array."""
-    path = f"/tmp/hackrf_rx_{os.getpid()}.iq"
+IQ_DIR = os.path.join(os.path.dirname(__file__), "iq_dumps")
+
+# Timestamps for each phase, populated during protocol runs
+timeline = []
+
+
+def _rx_capture(serial: str, duration: float, save_as: str = None) -> np.ndarray | None:
+    """Capture IQ data and return as array. Optionally save to iq_dumps/."""
+    if save_as:
+        os.makedirs(IQ_DIR, exist_ok=True)
+        path = os.path.join(IQ_DIR, save_as)
+    else:
+        path = f"/tmp/hackrf_rx_{os.getpid()}.iq"
     cmd = [
         "hackrf_transfer", "-d", serial, "-r", path,
         "-f", str(CENTER_FREQ), "-s", str(SAMPLE_RATE),
@@ -107,22 +117,34 @@ def _rx_capture(serial: str, duration: float) -> np.ndarray | None:
         return None
 
 
-def send_reliable(message: bytes, device: str = TX_SERIAL) -> bool:
+def send_reliable(message: bytes, device: str = TX_SERIAL,
+                  save: bool = False) -> bool:
     """
     Send a message with retransmission using a single HackRF.
     Half-duplex: transmit DATA, then switch to RX to listen for ACK.
     Returns True if ACK received, False after MAX_RETRIES.
     """
     seq = int(time.time()) % 256
+    timeline.clear()
 
     for attempt in range(1, MAX_RETRIES + 1):
         print(f"[SENDER] Transmitting seq={seq} attempt {attempt}/{MAX_RETRIES}")
+        t_tx_start = time.time()
+        timeline.append(("sender_tx_start", t_tx_start))
         frame = build_data_packet(seq, message)
         _tx_iq(frame, device)
+        t_tx_end = time.time()
+        timeline.append(("sender_tx_end", t_tx_end))
 
         # Switch to RX on the same device and listen for ACK
         print(f"[SENDER] Listening for ACK ({ACK_TIMEOUT:.0f}s)...")
-        iq_data = _rx_capture(device, ACK_TIMEOUT)
+        t_rx_start = time.time()
+        timeline.append(("sender_rx_start", t_rx_start))
+        iq_data = _rx_capture(device, ACK_TIMEOUT,
+                              save_as="sender_rx.iq" if save else None)
+        t_rx_end = time.time()
+        timeline.append(("sender_rx_end", t_rx_end))
+
         if iq_data is None:
             continue
 
@@ -138,6 +160,8 @@ def send_reliable(message: bytes, device: str = TX_SERIAL) -> bool:
         pkt_type, ack_seq, _ = pkt
         if pkt_type == TYPE_ACK and ack_seq == seq:
             print(f"[SENDER] ACK received for seq={seq}")
+            if save:
+                _save_timeline("sender")
             return True
         elif pkt_type == TYPE_NACK and ack_seq == seq:
             print(f"[SENDER] NACK received, retrying...")
@@ -148,14 +172,23 @@ def send_reliable(message: bytes, device: str = TX_SERIAL) -> bool:
 
 
 def receive_and_ack(device: str = RX_SERIAL,
-                    listen_duration: float = 15.0) -> bytes | None:
+                    listen_duration: float = 3.0,
+                    save: bool = False) -> bytes | None:
     """
     Listen for a DATA packet on a single HackRF, then switch to TX
     to send ACK back. Half-duplex on one device.
     Returns the message payload or None.
     """
+    timeline.clear()
+
     print(f"[RECEIVER] Listening for {listen_duration:.0f}s on {device}...")
-    iq_data = _rx_capture(device, listen_duration)
+    t_rx_start = time.time()
+    timeline.append(("receiver_rx_start", t_rx_start))
+    iq_data = _rx_capture(device, listen_duration,
+                          save_as="receiver_rx.iq" if save else None)
+    t_rx_end = time.time()
+    timeline.append(("receiver_rx_end", t_rx_end))
+
     if iq_data is None:
         return None
 
@@ -173,15 +206,32 @@ def receive_and_ack(device: str = RX_SERIAL,
     if pkt_type == TYPE_DATA:
         print(f"[RECEIVER] DATA received seq={seq}: {data}")
         # Delay so the sender has time to switch to RX mode
-        print(f"[RECEIVER] Waiting 3s for sender to switch to RX...")
-        time.sleep(3.0)
+        print(f"[RECEIVER] Waiting 1s for sender to switch to RX...")
+        time.sleep(1.0)
         # Switch to TX on the same device to send ACK
         ack = build_ack(seq)
         print(f"[RECEIVER] Sending ACK for seq={seq}")
+        t_tx_start = time.time()
+        timeline.append(("receiver_tx_start", t_tx_start))
         _tx_iq(ack, device)
+        t_tx_end = time.time()
+        timeline.append(("receiver_tx_end", t_tx_end))
+
+        if save:
+            _save_timeline("receiver")
         return data
 
     return None
+
+
+def _save_timeline(role: str):
+    """Save timeline events to a JSON file for visualization."""
+    import json
+    os.makedirs(IQ_DIR, exist_ok=True)
+    path = os.path.join(IQ_DIR, f"{role}_timeline.json")
+    with open(path, "w") as f:
+        json.dump(timeline, f, indent=2)
+    print(f"[{role.upper()}] Timeline saved: {path}")
 
 
 if __name__ == "__main__":
@@ -204,13 +254,16 @@ For a full test, run in two terminals:
         print(usage)
         sys.exit(0)
 
-    if sys.argv[1] == "rx":
-        data = receive_and_ack(device=RX_SERIAL)
+    save = "--save" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--save"]
+
+    if args[0] == "rx":
+        data = receive_and_ack(device=RX_SERIAL, save=save)
         if data:
             print(f"\nReceived: {data.decode('utf-8', errors='replace')}")
-    elif sys.argv[1] == "send":
-        msg = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "Hello with ACK!"
-        ok = send_reliable(msg.encode(), device=TX_SERIAL)
+    elif args[0] == "send":
+        msg = " ".join(args[1:]) if len(args) > 1 else "Hello with ACK!"
+        ok = send_reliable(msg.encode(), device=TX_SERIAL, save=save)
         print(f"\nResult: {'delivered' if ok else 'failed'}")
     else:
         print(usage)
