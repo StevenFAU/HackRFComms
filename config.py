@@ -22,3 +22,55 @@ SAMPLES_PER_SYMBOL = SAMPLE_RATE // SYMBOL_RATE  # 200 samples/symbol
 # Framing
 PREAMBLE = bytes([0xAA] * 8)   # 8-byte preamble for clock sync
 SYNC_WORD = bytes([0x2D, 0xD4])  # Sync word to mark frame start
+
+# Per-protocol radio configurations (used by hackrf.py launcher)
+PROTOCOLS = {
+    "adsb": {
+        "center_freq": 1_090_000_000,
+        "sample_rate": 2_000_000,
+        "lna_gain": 32,
+        "vga_gain": 40,
+        "bandwidth": 1_750_000,
+        "description": "ADS-B aircraft tracking (1090 MHz)",
+    },
+    "ais": {
+        "center_freq": 162_000_000,
+        "sample_rate": 2_000_000,
+        "lna_gain": 32,
+        "vga_gain": 40,
+        "bandwidth": 1_750_000,
+        "description": "AIS marine vessel tracking (162 MHz)",
+    },
+    "fm": {
+        "center_freq": None,  # Set per-station
+        "sample_rate": 2_000_000,
+        "lna_gain": 24,
+        "vga_gain": 30,
+        "bandwidth": 200_000,
+        "description": "FM radio demodulation (88-108 MHz)",
+    },
+    "acars": {
+        "center_freq": 131_550_000,
+        "sample_rate": 2_000_000,
+        "lna_gain": 32,
+        "vga_gain": 40,
+        "bandwidth": 1_750_000,
+        "description": "ACARS aircraft messages (131.55 MHz)",
+    },
+    "noaa": {
+        "center_freq": 137_100_000,
+        "sample_rate": 2_000_000,
+        "lna_gain": 32,
+        "vga_gain": 40,
+        "bandwidth": 1_750_000,
+        "description": "NOAA weather satellite APT (137 MHz)",
+    },
+    "comms": {
+        "center_freq": 915_000_000,
+        "sample_rate": 2_000_000,
+        "lna_gain": 32,
+        "vga_gain": 40,
+        "bandwidth": 1_750_000,
+        "description": "HackRFComs OOK protocol (915 MHz)",
+    },
+}
