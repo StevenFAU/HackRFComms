@@ -1,116 +1,222 @@
 #!/usr/bin/env python3
 """
 HackRFComs - Frequency Scanner
-Sweep a frequency range and show what's out there.
-Reuses the demodulation chain to check for OOK signals at each step,
-and shows a power-vs-frequency overview.
+Uses hackrf_sweep for fast wideband scanning. Can sweep the entire
+HackRF range (1 MHz – 6 GHz) in seconds instead of minutes.
+
+Output: live ASCII power bars + optional matplotlib waterfall plot.
 """
 
 import sys
 import os
-import time
 import subprocess
 import numpy as np
-from config import RX_SERIAL, SAMPLE_RATE, LNA_GAIN, VGA_GAIN
+from config import RX_SERIAL, LNA_GAIN, VGA_GAIN
 
 IQ_DIR = os.path.join(os.path.dirname(__file__), "iq_dumps")
 
 
-def _run_hackrf(cmd, duration):
-    """Run hackrf_transfer for a duration, then clean up."""
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    except FileNotFoundError:
-        print("hackrf_transfer not found")
-        return False
-    time.sleep(duration)
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-    return proc.returncode in (0, -15)
-
-
-def measure_power(freq: int, duration: float = 0.5,
-                  serial: str = RX_SERIAL) -> tuple[float, float]:
+def sweep(start_mhz: int = 1, end_mhz: int = 6000,
+          bin_width: int = 1_000_000, num_sweeps: int = 1,
+          serial: str = RX_SERIAL,
+          lna_gain: int = LNA_GAIN, vga_gain: int = VGA_GAIN,
+          amp: bool = True) -> list[tuple[float, float]]:
     """
-    Capture at a frequency and return (mean_power_dB, peak_power_dB).
+    Run hackrf_sweep and return list of (freq_mhz, power_db) tuples.
+    bin_width is in Hz (default 1 MHz). Smaller = finer resolution but slower.
     """
-    path = f"/tmp/hackrf_scan_{os.getpid()}.iq"
     cmd = [
-        "hackrf_transfer", "-d", serial, "-r", path,
-        "-f", str(freq), "-s", str(SAMPLE_RATE),
-        "-l", str(LNA_GAIN), "-g", str(VGA_GAIN), "-a", "1",
+        "hackrf_sweep",
+        "-d", serial,
+        "-f", f"{start_mhz}:{end_mhz}",
+        "-w", str(bin_width),
+        "-l", str(lna_gain),
+        "-g", str(vga_gain),
+        "-N", str(num_sweeps),
     ]
-    if not _run_hackrf(cmd, duration):
-        return -100.0, -100.0
+    if amp:
+        cmd += ["-a", "1"]
 
     try:
-        raw = np.fromfile(path, dtype=np.int8)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except FileNotFoundError:
-        return -100.0, -100.0
-
-    if len(raw) < 1000:
-        return -100.0, -100.0
-
-    i = raw[0::2].astype(np.float64)
-    q = raw[1::2].astype(np.float64)
-    power = i**2 + q**2
-
-    mean_pow = np.mean(power)
-    peak_pow = np.max(power)
-
-    # Convert to dB (relative to full-scale 127^2)
-    fs = 127.0 ** 2
-    mean_db = 10 * np.log10(mean_pow / fs) if mean_pow > 0 else -100.0
-    peak_db = 10 * np.log10(peak_pow / fs) if peak_pow > 0 else -100.0
-
-    return mean_db, peak_db
-
-
-def scan(start_freq: int, end_freq: int, step: int,
-         dwell: float = 0.5, serial: str = RX_SERIAL):
-    """
-    Sweep from start_freq to end_freq, printing power at each step.
-    """
-    freqs = list(range(start_freq, end_freq + 1, step))
-    print(f"Scanning {start_freq/1e6:.1f} - {end_freq/1e6:.1f} MHz "
-          f"({len(freqs)} steps, {step/1e6:.2f} MHz each, {dwell:.1f}s dwell)")
-    print(f"Device: {serial}")
-    print()
-    print(f"{'Freq (MHz)':>12}  {'Mean dB':>8}  {'Peak dB':>8}  {'Strength'}")
-    print("-" * 60)
+        print("hackrf_sweep not found — install hackrf tools")
+        return []
+    except subprocess.TimeoutExpired:
+        print("hackrf_sweep timed out")
+        return []
 
     results = []
-    for freq in freqs:
-        mean_db, peak_db = measure_power(freq, dwell, serial)
-        results.append((freq, mean_db, peak_db))
+    for line in proc.stdout.strip().split("\n"):
+        line = line.strip()
+        if not line or line.startswith("call ") or line.startswith("Stop "):
+            continue
+        parts = line.split(", ")
+        if len(parts) < 7:
+            continue
+        try:
+            hz_low = int(parts[2])
+            hz_high = int(parts[3])
+            hz_bin_width = float(parts[4])
+            db_values = [float(x) for x in parts[6:]]
+        except (ValueError, IndexError):
+            continue
 
-        # Visual bar
-        bar_len = max(0, int((mean_db + 30) * 3))  # -30 dB = 0 bars
-        bar = "#" * min(bar_len, 40)
-        print(f"  {freq/1e6:>10.3f}  {mean_db:>8.1f}  {peak_db:>8.1f}  {bar}")
+        n_bins = len(db_values)
+        for i, db in enumerate(db_values):
+            freq_hz = hz_low + i * hz_bin_width
+            results.append((freq_hz / 1e6, db))
 
-    # Summary
-    print()
-    strongest = max(results, key=lambda r: r[1])
-    print(f"Strongest: {strongest[0]/1e6:.3f} MHz (mean={strongest[1]:.1f} dB, peak={strongest[2]:.1f} dB)")
-
+    # Sort by frequency
+    results.sort(key=lambda x: x[0])
     return results
 
 
+def print_results(results: list[tuple[float, float]],
+                  start_mhz: int, end_mhz: int):
+    """Print ASCII bar chart of scan results."""
+    if not results:
+        print("No results.")
+        return
+
+    db_values = [db for _, db in results]
+    db_min = min(db_values)
+    db_max = max(db_values)
+
+    print(f"\nScan: {start_mhz} – {end_mhz} MHz  ({len(results)} bins)")
+    print(f"Range: {db_min:.1f} to {db_max:.1f} dB")
+    print()
+    print(f"{'Freq (MHz)':>12}  {'dB':>7}  Signal")
+    print("-" * 70)
+
+    for freq_mhz, db in results:
+        # Normalize to 0–40 character bar
+        bar_len = max(0, int((db - db_min) / max(db_max - db_min, 1) * 40))
+        bar = "#" * bar_len
+        print(f"  {freq_mhz:>10.2f}  {db:>7.1f}  {bar}")
+
+    # Top 5 strongest
+    print()
+    top = sorted(results, key=lambda x: x[1], reverse=True)[:5]
+    print("Strongest frequencies:")
+    for freq, db in top:
+        print(f"  {freq:.2f} MHz  ({db:.1f} dB)")
+
+
+def plot_results(results: list[tuple[float, float]],
+                 start_mhz: int, end_mhz: int, save: bool = False):
+    """Plot scan results as a spectrum graph."""
+    import matplotlib
+    matplotlib.use('TkAgg')
+    import matplotlib.pyplot as plt
+
+    if not results:
+        print("No results to plot.")
+        return
+
+    freqs = np.array([r[0] for r in results])
+    powers = np.array([r[1] for r in results])
+
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(14, 5), facecolor='#111')
+
+    ax.fill_between(freqs, powers, powers.min() - 3, alpha=0.3, color='#ff6600')
+    ax.plot(freqs, powers, color='#ff6600', linewidth=0.6)
+
+    # Mark strongest
+    peak_idx = np.argmax(powers)
+    ax.annotate(f'{freqs[peak_idx]:.1f} MHz\n{powers[peak_idx]:.1f} dB',
+                xy=(freqs[peak_idx], powers[peak_idx]),
+                xytext=(freqs[peak_idx], powers[peak_idx] + 5),
+                ha='center', fontsize=8, color='white',
+                arrowprops=dict(arrowstyle='->', color='cyan'),
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='#333', alpha=0.8))
+
+    # Mark known bands
+    bands = [
+        (88, 108, "FM Radio"),
+        (462, 467, "FRS/GMRS"),
+        (851, 869, "Cell 850"),
+        (869, 894, "Cell 850 DL"),
+        (902, 928, "ISM 915"),
+        (1710, 1755, "AWS UL"),
+        (1930, 1990, "PCS DL"),
+        (2400, 2500, "WiFi 2.4G"),
+    ]
+    for bstart, bend, name in bands:
+        if bstart >= freqs[0] and bend <= freqs[-1]:
+            ax.axvspan(bstart, bend, alpha=0.08, color='cyan')
+            mid = (bstart + bend) / 2
+            ax.text(mid, ax.get_ylim()[1] - 2, name,
+                    ha='center', fontsize=6, color='cyan', alpha=0.7)
+
+    ax.set_xlabel("Frequency (MHz)")
+    ax.set_ylabel("Power (dB)")
+    ax.set_title(f"HackRFComs — Spectrum Scan {start_mhz}–{end_mhz} MHz",
+                 fontweight='bold', color='white')
+    ax.grid(True, alpha=0.15)
+    ax.set_xlim(freqs[0], freqs[-1])
+
+    plt.tight_layout()
+
+    if save:
+        os.makedirs(IQ_DIR, exist_ok=True)
+        out = os.path.join(IQ_DIR, "spectrum_scan.png")
+        plt.savefig(out, dpi=150, bbox_inches='tight', facecolor='#111')
+        print(f"Saved: {out}")
+
+    plt.show()
+
+
 if __name__ == "__main__":
-    # Defaults: scan ISM 915 MHz band
-    start = 910_000_000
-    end = 920_000_000
-    step = 1_000_000  # 1 MHz steps
+    usage = """Usage:
+  python3 scanner.py                          # Quick ISM 915 band scan
+  python3 scanner.py 88 108                   # FM radio band
+  python3 scanner.py 400 1700                 # Wide sweep (400 MHz - 1.7 GHz)
+  python3 scanner.py 2400 2500 --plot         # WiFi band with plot
+  python3 scanner.py 1 6000 --plot --save     # Full range with saved plot
 
-    if len(sys.argv) >= 3:
-        start = int(float(sys.argv[1]) * 1e6)
-        end = int(float(sys.argv[2]) * 1e6)
-    if len(sys.argv) >= 4:
-        step = int(float(sys.argv[3]) * 1e6)
+Options:
+  --plot   Show matplotlib spectrum plot
+  --save   Save plot to iq_dumps/spectrum_scan.png
+  --fine   Use 100 kHz bins (slower, more detail)
+  --sweeps N  Number of sweeps to average (default: 1)
+"""
 
-    scan(start, end, step)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+
+    if "--help" in flags or "-h" in flags:
+        print(usage)
+        sys.exit(0)
+
+    # Defaults: ISM 915 band
+    start = 900
+    end = 930
+
+    if len(args) >= 2:
+        start = int(float(args[0]))
+        end = int(float(args[1]))
+    elif len(args) == 1:
+        # Single arg: center frequency, scan +/- 10 MHz
+        center = int(float(args[0]))
+        start = center - 10
+        end = center + 10
+
+    bin_width = 100_000 if "--fine" in flags else 1_000_000
+
+    num_sweeps = 1
+    if "--sweeps" in sys.argv:
+        idx = sys.argv.index("--sweeps")
+        if idx + 1 < len(sys.argv):
+            num_sweeps = int(sys.argv[idx + 1])
+
+    do_plot = "--plot" in flags
+    do_save = "--save" in flags
+
+    print(f"Scanning {start} – {end} MHz ({'fine' if bin_width < 1_000_000 else 'coarse'} resolution)...")
+    results = sweep(start, end, bin_width=bin_width, num_sweeps=num_sweeps)
+    print_results(results, start, end)
+
+    if do_plot:
+        plot_results(results, start, end, save=do_save)
