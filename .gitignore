@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 firmware/
 working_backup/
+backend/.venv/
+frontend/node_modules/
+frontend/dist/
