@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import Layout from './components/Layout'
 import DeviceDashboard from './components/DeviceDashboard'
+import CommsPanel from './components/CommsPanel'
 
 function ComingSoon({ page }) {
   return (
@@ -21,7 +22,7 @@ export default function App() {
       case 'dashboard':
         return <DeviceDashboard />
       case 'comms':
-        return <ComingSoon page="Comms" />
+        return <CommsPanel />
       case 'scanner':
         return <ComingSoon page="Scanner" />
       case 'adsb':
