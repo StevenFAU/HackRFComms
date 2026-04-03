@@ -3,6 +3,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from routers import device as device_router
+
 app = FastAPI(title="HackRFComms API")
 
 app.add_middleware(
@@ -12,6 +14,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(device_router.router, prefix="/api")
 
 
 @app.get("/api/health")

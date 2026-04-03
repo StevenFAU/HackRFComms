@@ -1,21 +1,43 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import Layout from './components/Layout'
+import DeviceDashboard from './components/DeviceDashboard'
 
-export default function App() {
-  const [status, setStatus] = useState('Connecting...')
-
-  useEffect(() => {
-    fetch('/api/health')
-      .then(r => r.json())
-      .then(d => setStatus(`${d.project} — ${d.status}`))
-      .catch(() => setStatus('Backend unreachable'))
-  }, [])
-
+function ComingSoon({ page }) {
   return (
-    <div className="min-h-screen bg-[#1a1a2e] flex items-center justify-center">
+    <div className="flex items-center justify-center h-64">
       <div className="text-center">
-        <h1 className="text-4xl font-bold text-[#00d2ff] font-mono mb-4">HackRFComms</h1>
-        <p className="text-lg text-gray-300 font-mono">{status}</p>
+        <p className="text-2xl font-mono text-gray-600 mb-2">{page}</p>
+        <p className="text-sm font-mono text-gray-700">Coming soon</p>
       </div>
     </div>
+  )
+}
+
+export default function App() {
+  const [activePage, setActivePage] = useState('dashboard')
+
+  function renderPage() {
+    switch (activePage) {
+      case 'dashboard':
+        return <DeviceDashboard />
+      case 'comms':
+        return <ComingSoon page="Comms" />
+      case 'scanner':
+        return <ComingSoon page="Scanner" />
+      case 'adsb':
+        return <ComingSoon page="ADS-B" />
+      case 'fm':
+        return <ComingSoon page="FM Radio" />
+      case 'signals':
+        return <ComingSoon page="Signals" />
+      default:
+        return <DeviceDashboard />
+    }
+  }
+
+  return (
+    <Layout activePage={activePage} onNav={setActivePage}>
+      {renderPage()}
+    </Layout>
   )
 }
