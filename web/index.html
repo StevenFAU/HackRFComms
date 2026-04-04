@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HackRFComms</title>
+
+    <!-- React 18 from CDN -->
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+
+    <!-- Babel for JSX transpilation in browser -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+
+    <!-- Tailwind CSS from CDN (no build step) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        panel: '#16213e',
+                        sidebar: '#0f3460',
+                        base: '#1a1a2e',
+                        accent: '#00d2ff',
+                        alert: '#e94560',
+                    },
+                    fontFamily: {
+                        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Leaflet for ADS-B map (Phase 5) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+
+    <!-- Recharts for spectrum plots (Phase 4) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
+
+    <style>
+        body { margin: 0; background: #1a1a2e; color: #e2e8f0; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #1a1a2e; }
+        ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        // ═══════════════════════════════════════════════════════
+        // PHASE 1: APP SHELL — sidebar, header, routing, health
+        // ═══════════════════════════════════════════════════════
+
+        const NAV_ITEMS = [
+            { id: 'dashboard', label: 'Dashboard',  icon: '⬡' },
+            { id: 'comms',     label: 'Comms',      icon: '⇄' },
+            { id: 'scanner',   label: 'Scanner',    icon: '⊶' },
+            { id: 'adsb',      label: 'ADS-B',      icon: '✈' },
+            { id: 'fm',        label: 'FM Radio',   icon: '◉' },
+            { id: 'signals',   label: 'Signals',    icon: '∿' },
+            { id: 'flipper',   label: 'Flipper',    icon: '⌨' },
+        ];
+
+        // ── StatusDot ──────────────────────────────────────────
+        function StatusDot({ connected }) {
+            return (
+                <span
+                    title={connected === null ? 'Connecting…' : connected ? 'Connected' : 'Disconnected'}
+                    className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                    style={{
+                        background: connected === null ? '#6b7280' : connected ? '#22c55e' : '#e94560',
+                        boxShadow: connected ? '0 0 6px #22c55e' : 'none',
+                    }}
+                />
+            );
+        }
+
+        // ── Page stubs ─────────────────────────────────────────
+        function PageStub({ title, icon, description }) {
+            return (
+                <div className="flex flex-col items-center justify-center h-full min-h-64 gap-4 text-gray-500">
+                    <span className="text-5xl opacity-30">{icon}</span>
+                    <div className="text-center">
+                        <p className="text-lg font-semibold text-gray-400">{title}</p>
+                        <p className="text-sm mt-1">{description || 'Coming in a future phase.'}</p>
+                    </div>
+                </div>
+            );
+        }
+
+        function DashboardPage()  { return <PageStub title="Dashboard"  icon="⬡" description="Device status and protocol overview — Phase 2." />; }
+        function CommsPage()      { return <PageStub title="Comms"      icon="⇄" description="OOK send/receive with HackRF — Phase 3." />; }
+        function ScannerPage()    { return <PageStub title="Scanner"    icon="⊶" description="Spectrum sweep with Recharts — Phase 4." />; }
+        function AdsbPage()       { return <PageStub title="ADS-B"      icon="✈" description="Aircraft tracker with Leaflet map — Phase 5." />; }
+        function FmPage()         { return <PageStub title="FM Radio"   icon="◉" description="Capture and playback FM stations — Phase 6." />; }
+        function SignalsPage()    { return <PageStub title="Signals"    icon="∿" description="IQ capture envelope viewer — Phase 8." />; }
+        function FlipperPage()    { return <PageStub title="Flipper"    icon="⌨" description="Encode/decode Flipper Zero .sub files — Phase 7." />; }
+
+        const PAGES = {
+            dashboard: DashboardPage,
+            comms:     CommsPage,
+            scanner:   ScannerPage,
+            adsb:      AdsbPage,
+            fm:        FmPage,
+            signals:   SignalsPage,
+            flipper:   FlipperPage,
+        };
+
+        // ── Sidebar ────────────────────────────────────────────
+        function Sidebar({ activePage, onNavigate }) {
+            return (
+                <aside
+                    className="flex flex-col w-52 flex-shrink-0 h-screen"
+                    style={{ background: '#0f3460', borderRight: '1px solid #1e3a5f' }}
+                >
+                    {/* Logo */}
+                    <div className="px-4 py-5" style={{ borderBottom: '1px solid #1e3a5f' }}>
+                        <div className="text-sm font-bold tracking-widest" style={{ color: '#00d2ff' }}>
+                            HACKRF
+                        </div>
+                        <div className="text-xs text-gray-400 tracking-widest">COMMS</div>
+                    </div>
+
+                    {/* Nav items */}
+                    <nav className="flex-1 py-3 overflow-y-auto">
+                        {NAV_ITEMS.map(item => {
+                            const active = activePage === item.id;
+                            return (
+                                <button
+                                    key={item.id}
+                                    onClick={() => onNavigate(item.id)}
+                                    className="w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors"
+                                    style={{
+                                        background: active ? '#16213e' : 'transparent',
+                                        color: active ? '#00d2ff' : '#94a3b8',
+                                        borderLeft: active ? '2px solid #00d2ff' : '2px solid transparent',
+                                    }}
+                                >
+                                    <span className="text-base w-5 text-center opacity-80">{item.icon}</span>
+                                    {item.label}
+                                </button>
+                            );
+                        })}
+                    </nav>
+
+                    {/* Footer */}
+                    <div className="px-4 py-3 text-xs text-gray-600" style={{ borderTop: '1px solid #1e3a5f' }}>
+                        web/lightweight
+                    </div>
+                </aside>
+            );
+        }
+
+        // ── Header ─────────────────────────────────────────────
+        function Header({ activePage, connected }) {
+            const item = NAV_ITEMS.find(n => n.id === activePage);
+            return (
+                <header
+                    className="flex items-center justify-between px-6 py-3 flex-shrink-0"
+                    style={{ background: '#16213e', borderBottom: '1px solid #1e3a5f' }}
+                >
+                    <div className="flex items-center gap-3">
+                        <span className="text-lg">{item?.icon}</span>
+                        <span className="text-sm font-semibold text-gray-200">{item?.label}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-gray-400">
+                        <StatusDot connected={connected} />
+                        <span>{connected === null ? 'connecting…' : connected ? 'API connected' : 'API offline'}</span>
+                    </div>
+                </header>
+            );
+        }
+
+        // ── Layout ─────────────────────────────────────────────
+        function Layout({ children, activePage, onNavigate, connected }) {
+            return (
+                <div className="flex h-screen overflow-hidden" style={{ background: '#1a1a2e' }}>
+                    <Sidebar activePage={activePage} onNavigate={onNavigate} />
+                    <div className="flex flex-col flex-1 overflow-hidden">
+                        <Header activePage={activePage} connected={connected} />
+                        <main className="flex-1 overflow-auto p-6">
+                            {children}
+                        </main>
+                    </div>
+                </div>
+            );
+        }
+
+        // ── App ────────────────────────────────────────────────
+        function App() {
+            const [activePage, setActivePage] = useState('dashboard');
+            const [connected, setConnected]   = useState(null); // null=checking, true, false
+
+            useEffect(() => {
+                fetch('/api/health')
+                    .then(r => r.ok ? r.json() : Promise.reject())
+                    .then(() => setConnected(true))
+                    .catch(() => setConnected(false));
+            }, []);
+
+            const PageComponent = PAGES[activePage] || DashboardPage;
+
+            return (
+                <Layout activePage={activePage} onNavigate={setActivePage} connected={connected}>
+                    <PageComponent />
+                </Layout>
+            );
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // MOUNT
+        // ═══════════════════════════════════════════════════════
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
