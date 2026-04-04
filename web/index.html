@@ -37,8 +37,8 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 
-    <!-- Recharts for spectrum plots (Phase 4) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
+    <!-- Recharts for spectrum plots (Phase 4) — unpkg is more reliable for UMD bundles -->
+    <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
 
     <style>
         body { margin: 0; background: #1a1a2e; color: #e2e8f0; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
@@ -51,6 +51,28 @@
     <div id="root"></div>
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
+
+        // ── Error boundary — catches per-page crashes without killing the app ──
+        class ErrorBoundary extends React.Component {
+            constructor(props) { super(props); this.state = { error: null }; }
+            static getDerivedStateFromError(e) { return { error: e }; }
+            render() {
+                if (this.state.error) {
+                    return (
+                        <div className="flex flex-col items-center justify-center h-full gap-3 text-sm">
+                            <span className="text-2xl" style={{ color: '#e94560' }}>⚠</span>
+                            <span className="text-gray-400">Page error: {this.state.error.message}</span>
+                            <button
+                                onClick={() => this.setState({ error: null })}
+                                className="text-xs px-3 py-1.5 rounded"
+                                style={{ background: '#0f3460', color: '#00d2ff', border: '1px solid #00d2ff' }}
+                            >Retry</button>
+                        </div>
+                    );
+                }
+                return this.props.children;
+            }
+        }
 
         // ═══════════════════════════════════════════════════════
         // PHASE 1: APP SHELL — sidebar, header, routing, health
@@ -461,7 +483,7 @@
 
             const { LineChart, Line, XAxis, YAxis, CartesianGrid,
                     Tooltip, ResponsiveContainer, ReferenceLine,
-                    ReferenceArea } = Recharts;
+                    ReferenceArea } = (window.Recharts || {});
 
             function applyPreset(p) {
                 setStartMhz(p.start);
@@ -572,6 +594,13 @@
                         </div>
                     </div>
 
+                    {/* Recharts not loaded */}
+                    {!LineChart && (
+                        <div className="text-sm px-4 py-2 rounded" style={{ background: '#2a1e2e', color: '#e94560', border: '1px solid #e9456044' }}>
+                            ⚠ Recharts library failed to load — check your internet connection and refresh.
+                        </div>
+                    )}
+
                     {/* Error */}
                     {error && (
                         <div className="text-sm px-4 py-2 rounded" style={{ background: '#2a1e2e', color: '#e94560', border: '1px solid #e9456044' }}>
@@ -596,7 +625,7 @@
                     )}
 
                     {/* Chart */}
-                    {data && (
+                    {data && LineChart && (
                         <div className="rounded-lg p-4" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
                             <ResponsiveContainer width="100%" height={300}>
                                 <LineChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
@@ -1595,7 +1624,9 @@
                     <div className="flex flex-col flex-1 overflow-hidden">
                         <Header activePage={activePage} connected={connected} />
                         <main className="flex-1 overflow-auto p-6">
-                            {children}
+                            <ErrorBoundary key={activePage}>
+                                {children}
+                            </ErrorBoundary>
                         </main>
                     </div>
                 </div>
