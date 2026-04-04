@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 
 from routers import device as device_router
 from routers import comms as comms_router
+from routers import scanner as scanner_router
 
 app = FastAPI(title="HackRFComms API")
 
@@ -19,6 +20,7 @@ app.add_middleware(
 
 app.include_router(device_router.router, prefix="/api")
 app.include_router(comms_router.router, prefix="/api")
+app.include_router(scanner_router.router, prefix="/api")
 
 
 @app.get("/api/health")

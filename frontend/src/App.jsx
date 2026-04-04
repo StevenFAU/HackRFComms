@@ -2,6 +2,7 @@ import { useState } from 'react'
 import Layout from './components/Layout'
 import DeviceDashboard from './components/DeviceDashboard'
 import CommsPanel from './components/CommsPanel'
+import SpectrumView from './components/SpectrumView'
 
 function ComingSoon({ page }) {
   return (
@@ -24,7 +25,7 @@ export default function App() {
       case 'comms':
         return <CommsPanel />
       case 'scanner':
-        return <ComingSoon page="Scanner" />
+        return <SpectrumView />
       case 'adsb':
         return <ComingSoon page="ADS-B" />
       case 'fm':
