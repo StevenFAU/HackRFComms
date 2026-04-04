@@ -1,4 +1,4 @@
-# HackRFComs
+# HackRFComms
 
 Multi-protocol RF platform built on HackRF One and Flipper Zero. OOK comms, ADS-B aircraft tracking, FM radio, AIS marine tracking, wideband spectrum scanning — all from scratch with raw IQ samples, numpy, and scipy. No GNURadio, no SDR frameworks.
 
