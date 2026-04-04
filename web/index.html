@@ -1064,7 +1064,227 @@
             );
         }
         function SignalsPage()    { return <PageStub title="Signals"    icon="∿" description="IQ capture envelope viewer — Phase 8." />; }
-        function FlipperPage()    { return <PageStub title="Flipper"    icon="⌨" description="Encode/decode Flipper Zero .sub files — Phase 7." />; }
+        // ═══════════════════════════════════════════════════════
+        // PHASE 7: FLIPPER ZERO PANEL
+        // ═══════════════════════════════════════════════════════
+
+        function FlipperPage() {
+            // Encode state
+            const [encMsg,       setEncMsg]       = useState('');
+            const [encoding,     setEncoding]      = useState(false);
+            const [encResult,    setEncResult]     = useState(null);
+            const [encError,     setEncError]      = useState(null);
+
+            // Decode state
+            const [decoding,     setDecoding]      = useState(false);
+            const [decResult,    setDecResult]     = useState(null);
+            const [decError,     setDecError]      = useState(null);
+            const [dragOver,     setDragOver]      = useState(false);
+            const fileInputRef = useRef(null);
+
+            async function handleEncode() {
+                if (!encMsg.trim()) return;
+                setEncoding(true);
+                setEncError(null);
+                setEncResult(null);
+                try {
+                    const res = await fetch('/api/flipper/encode', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: encMsg }),
+                    });
+                    const data = await res.json();
+                    if (!data.success) {
+                        setEncError(data.error || 'Encode failed.');
+                    } else {
+                        setEncResult(data);
+                    }
+                } catch {
+                    setEncError('Request failed.');
+                } finally {
+                    setEncoding(false);
+                }
+            }
+
+            async function handleDecodeFile(file) {
+                if (!file || !file.name.endsWith('.sub')) {
+                    setDecError('Please upload a .sub file.');
+                    return;
+                }
+                setDecoding(true);
+                setDecError(null);
+                setDecResult(null);
+                const form = new FormData();
+                form.append('file', file);
+                try {
+                    const res = await fetch('/api/flipper/decode', { method: 'POST', body: form });
+                    const data = await res.json();
+                    if (data.error) {
+                        setDecError(data.error);
+                    } else {
+                        setDecResult(data);
+                    }
+                } catch {
+                    setDecError('Request failed.');
+                } finally {
+                    setDecoding(false);
+                }
+            }
+
+            function onFileChange(e) {
+                const file = e.target.files?.[0];
+                if (file) handleDecodeFile(file);
+            }
+
+            function onDrop(e) {
+                e.preventDefault();
+                setDragOver(false);
+                const file = e.dataTransfer.files?.[0];
+                if (file) handleDecodeFile(file);
+            }
+
+            return (
+                <div className="flex flex-col gap-6" style={{ maxWidth: '640px' }}>
+
+                    {/* ── Encode section ── */}
+                    <div className="rounded-lg p-4 flex flex-col gap-3" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+                        <h2 className="text-xs font-semibold tracking-widest text-gray-500 uppercase">Encode → .sub</h2>
+
+                        <div className="flex gap-2">
+                            <input
+                                type="text"
+                                value={encMsg}
+                                onChange={e => setEncMsg(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handleEncode()}
+                                placeholder="Message to transmit…"
+                                className="flex-1 px-3 py-2 rounded text-sm outline-none"
+                                style={{ background: '#0f3460', border: '1px solid #1e3a5f', color: '#e2e8f0', fontFamily: 'monospace' }}
+                            />
+                            <button
+                                onClick={handleEncode}
+                                disabled={encoding || !encMsg.trim()}
+                                className="px-4 py-2 rounded text-sm font-semibold transition-colors"
+                                style={{
+                                    background: encoding || !encMsg.trim() ? '#1e3a5f' : '#00d2ff',
+                                    color: encoding || !encMsg.trim() ? '#4a6a8f' : '#0f3460',
+                                    cursor: encoding || !encMsg.trim() ? 'not-allowed' : 'pointer',
+                                }}
+                            >
+                                {encoding ? 'Building…' : 'Generate .sub'}
+                            </button>
+                        </div>
+
+                        {encError && (
+                            <div className="text-xs px-3 py-2 rounded" style={{ background: '#2a1e2e', color: '#e94560' }}>⚠ {encError}</div>
+                        )}
+
+                        {encResult && (
+                            <div className="flex flex-col gap-2">
+                                <div className="grid grid-cols-3 gap-2 text-xs" style={{ fontFamily: 'monospace' }}>
+                                    <div className="rounded px-3 py-2" style={{ background: '#0f3460' }}>
+                                        <div className="text-gray-500 mb-0.5">Frame</div>
+                                        <div className="text-gray-200">{encResult.frame_bytes} bytes</div>
+                                    </div>
+                                    <div className="rounded px-3 py-2" style={{ background: '#0f3460' }}>
+                                        <div className="text-gray-500 mb-0.5">Duration</div>
+                                        <div className="text-gray-200">{encResult.duration_ms} ms</div>
+                                    </div>
+                                    <div className="rounded px-3 py-2" style={{ background: '#0f3460' }}>
+                                        <div className="text-gray-500 mb-0.5">Repeats</div>
+                                        <div className="text-gray-200">5×</div>
+                                    </div>
+                                </div>
+                                <a
+                                    href={encResult.download_url}
+                                    download="flipper_tx.sub"
+                                    className="inline-flex items-center gap-2 px-4 py-2 rounded text-sm font-semibold self-start"
+                                    style={{ background: '#1e4a3f', color: '#22c55e', border: '1px solid #22c55e44' }}
+                                >
+                                    ↓ Download flipper_tx.sub
+                                </a>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* ── Decode section ── */}
+                    <div className="rounded-lg p-4 flex flex-col gap-3" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+                        <h2 className="text-xs font-semibold tracking-widest text-gray-500 uppercase">Decode .sub → Message</h2>
+
+                        {/* Drop zone */}
+                        <div
+                            onClick={() => fileInputRef.current?.click()}
+                            onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                            onDragLeave={() => setDragOver(false)}
+                            onDrop={onDrop}
+                            className="rounded-lg flex flex-col items-center justify-center gap-2 py-8 cursor-pointer transition-colors text-sm"
+                            style={{
+                                border: `2px dashed ${dragOver ? '#00d2ff' : '#1e3a5f'}`,
+                                background: dragOver ? '#0f1f3a' : '#0f3460',
+                                color: dragOver ? '#00d2ff' : '#6b7280',
+                            }}
+                        >
+                            <span className="text-2xl opacity-50">⌨</span>
+                            <span>{decoding ? 'Decoding…' : 'Drop a .sub file here or click to upload'}</span>
+                        </div>
+                        <input ref={fileInputRef} type="file" accept=".sub" onChange={onFileChange} className="hidden" />
+
+                        {decError && (
+                            <div className="text-xs px-3 py-2 rounded" style={{ background: '#2a1e2e', color: '#e94560' }}>⚠ {decError}</div>
+                        )}
+
+                        {decResult && (
+                            <div className="flex flex-col gap-3">
+                                {/* Stats */}
+                                <div className="grid grid-cols-3 gap-2 text-xs" style={{ fontFamily: 'monospace' }}>
+                                    <div className="rounded px-3 py-2" style={{ background: '#0f3460' }}>
+                                        <div className="text-gray-500 mb-0.5">Frequency</div>
+                                        <div className="text-gray-200">{decResult.frequency ? (decResult.frequency / 1e6).toFixed(2) + ' MHz' : '—'}</div>
+                                    </div>
+                                    <div className="rounded px-3 py-2" style={{ background: '#0f3460' }}>
+                                        <div className="text-gray-500 mb-0.5">Durations</div>
+                                        <div className="text-gray-200">{decResult.duration_count}</div>
+                                    </div>
+                                    <div className="rounded px-3 py-2" style={{ background: '#0f3460' }}>
+                                        <div className="text-gray-500 mb-0.5">Bits</div>
+                                        <div className="text-gray-200">{decResult.bit_count}</div>
+                                    </div>
+                                </div>
+
+                                {/* Decoded messages */}
+                                {decResult.unique.length > 0 ? (
+                                    <div className="flex flex-col gap-1">
+                                        <div className="text-xs text-gray-500 mb-1">
+                                            {decResult.unique.length} unique message{decResult.unique.length !== 1 ? 's' : ''} ({decResult.messages.length} total)
+                                        </div>
+                                        {decResult.unique.map((msg, i) => (
+                                            <div key={i} className="px-3 py-2 rounded text-sm" style={{ background: '#1e3a2f', color: '#22c55e', fontFamily: 'monospace', border: '1px solid #22c55e22' }}>
+                                                {msg}
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="text-sm text-center py-3" style={{ color: '#e94560' }}>
+                                        No messages decoded — CRC/preamble mismatch
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* ── Instructions ── */}
+                    <div className="rounded-lg p-4 text-xs flex flex-col gap-2" style={{ background: '#16213e', border: '1px solid #1e3a5f', color: '#6b7280' }}>
+                        <div className="text-gray-400 font-semibold mb-1">Workflow</div>
+                        <div>1. Type message → Generate .sub → download file</div>
+                        <div>2. Copy flipper_tx.sub to Flipper SD card → Sub-GHz → Saved → Send</div>
+                        <div>3. To decode a capture: drop the .sub file in the box above</div>
+                        <div className="mt-2 pt-2" style={{ borderTop: '1px solid #1e3a5f', color: '#4a6a8f' }}>
+                            Note: CC1101 (Flipper) has a ~35 kHz frequency offset vs HackRF at 915 MHz.
+                            Fine-tune on the Flipper if packets are missed.
+                        </div>
+                    </div>
+                </div>
+            );
+        }
 
         const PAGES = {
             dashboard: DashboardPage,
