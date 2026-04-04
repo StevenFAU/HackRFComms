@@ -55,6 +55,8 @@
         // ═══════════════════════════════════════════════════════
         // PHASE 1: APP SHELL — sidebar, header, routing, health
         // ═══════════════════════════════════════════════════════
+        // PHASE 2: DEVICE DASHBOARD
+        // ═══════════════════════════════════════════════════════
 
         const NAV_ITEMS = [
             { id: 'dashboard', label: 'Dashboard',  icon: '⬡' },
@@ -93,7 +95,155 @@
             );
         }
 
-        function DashboardPage()  { return <PageStub title="Dashboard"  icon="⬡" description="Device status and protocol overview — Phase 2." />; }
+        // ── DeviceCard ─────────────────────────────────────────
+        function DeviceCard({ device }) {
+            const isFlipper = device.label === 'Flipper Zero';
+            const connected = device.connected;
+
+            let statusColor, statusText;
+            if (isFlipper) {
+                statusColor = '#6b7280';
+                statusText  = 'manual';
+            } else if (connected) {
+                statusColor = '#22c55e';
+                statusText  = 'connected';
+            } else {
+                statusColor = '#e94560';
+                statusText  = 'not found';
+            }
+
+            return (
+                <div
+                    className="rounded-lg p-4 flex flex-col gap-3"
+                    style={{ background: '#16213e', border: `1px solid ${connected ? '#1e4a3f' : isFlipper ? '#2a2a4a' : '#4a1e2a'}` }}
+                >
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <span className="text-sm font-semibold text-gray-200">{device.label}</span>
+                            <span
+                                className="ml-2 text-xs px-1.5 py-0.5 rounded"
+                                style={{ background: '#0f3460', color: '#00d2ff' }}
+                            >
+                                {device.role}
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-xs" style={{ color: statusColor }}>
+                            <span
+                                className="w-2 h-2 rounded-full inline-block"
+                                style={{ background: statusColor, boxShadow: connected && !isFlipper ? `0 0 5px ${statusColor}` : 'none' }}
+                            />
+                            {statusText}
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs" style={{ fontFamily: 'monospace' }}>
+                        <span className="text-gray-500">Serial</span>
+                        <span className="text-gray-300 truncate" title={device.serial}>{device.serial}</span>
+                        <span className="text-gray-500">Firmware</span>
+                        <span className="text-gray-300">{device.firmware || '—'}</span>
+                        <span className="text-gray-500">Hardware</span>
+                        <span className="text-gray-300">{device.hardware || '—'}</span>
+                    </div>
+                </div>
+            );
+        }
+
+        // ── ProtocolTable ──────────────────────────────────────
+        function ProtocolTable({ protocols }) {
+            return (
+                <div className="rounded-lg overflow-hidden" style={{ border: '1px solid #1e3a5f' }}>
+                    <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                        <thead>
+                            <tr style={{ background: '#0f3460', color: '#94a3b8' }}>
+                                <th className="text-left px-4 py-2 font-medium">Protocol</th>
+                                <th className="text-left px-4 py-2 font-medium">Frequency</th>
+                                <th className="text-left px-4 py-2 font-medium">Sample Rate</th>
+                                <th className="text-left px-4 py-2 font-medium hidden md:table-cell">Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {protocols.map((p, i) => (
+                                <tr
+                                    key={p.name}
+                                    style={{
+                                        background: i % 2 === 0 ? '#16213e' : '#1a2540',
+                                        borderTop: '1px solid #1e3a5f',
+                                    }}
+                                >
+                                    <td className="px-4 py-2 font-semibold" style={{ color: '#00d2ff', fontFamily: 'monospace' }}>
+                                        {p.name}
+                                    </td>
+                                    <td className="px-4 py-2 text-gray-300" style={{ fontFamily: 'monospace' }}>
+                                        {p.freq_mhz != null ? `${p.freq_mhz} MHz` : '—'}
+                                    </td>
+                                    <td className="px-4 py-2 text-gray-300" style={{ fontFamily: 'monospace' }}>
+                                        {p.sample_rate_mhz} MS/s
+                                    </td>
+                                    <td className="px-4 py-2 text-gray-400 hidden md:table-cell">{p.description}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            );
+        }
+
+        // ── DashboardPage ──────────────────────────────────────
+        function DashboardPage() {
+            const [devices, setDevices]     = useState(null);
+            const [protocols, setProtocols] = useState(null);
+            const [error, setError]         = useState(null);
+
+            const fetchAll = useCallback(() => {
+                Promise.all([
+                    fetch('/api/devices').then(r => r.json()),
+                    fetch('/api/protocols').then(r => r.json()),
+                ]).then(([devData, protoData]) => {
+                    setDevices(devData.devices);
+                    setProtocols(protoData.protocols);
+                    setError(null);
+                }).catch(() => setError('Failed to load device data.'));
+            }, []);
+
+            useEffect(() => {
+                fetchAll();
+                const id = setInterval(fetchAll, 5000);
+                return () => clearInterval(id);
+            }, [fetchAll]);
+
+            if (error) {
+                return (
+                    <div className="flex items-center justify-center h-full text-sm" style={{ color: '#e94560' }}>
+                        {error}
+                    </div>
+                );
+            }
+
+            if (!devices || !protocols) {
+                return (
+                    <div className="flex items-center justify-center h-full text-sm text-gray-500">
+                        Loading…
+                    </div>
+                );
+            }
+
+            return (
+                <div className="flex flex-col gap-6 max-w-4xl">
+                    {/* Device cards */}
+                    <div>
+                        <h2 className="text-xs font-semibold tracking-widest text-gray-500 uppercase mb-3">Devices</h2>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            {devices.map(d => <DeviceCard key={d.serial} device={d} />)}
+                        </div>
+                    </div>
+
+                    {/* Protocol table */}
+                    <div>
+                        <h2 className="text-xs font-semibold tracking-widest text-gray-500 uppercase mb-3">Protocols</h2>
+                        <ProtocolTable protocols={protocols} />
+                    </div>
+                </div>
+            );
+        }
         function CommsPage()      { return <PageStub title="Comms"      icon="⇄" description="OOK send/receive with HackRF — Phase 3." />; }
         function ScannerPage()    { return <PageStub title="Scanner"    icon="⊶" description="Spectrum sweep with Recharts — Phase 4." />; }
         function AdsbPage()       { return <PageStub title="ADS-B"      icon="✈" description="Aircraft tracker with Leaflet map — Phase 5." />; }
