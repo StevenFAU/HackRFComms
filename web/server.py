@@ -14,12 +14,13 @@ sys.path.insert(0, ROOT)
 app = FastAPI(title="HackRFComms")
 
 # Import API routers (added as they're built in later phases)
-from web.api import devices, comms, scan
-# from web.api import adsb, fm, signals, flipper
+from web.api import devices, comms, scan, adsb
+# from web.api import fm, signals, flipper
 
 app.include_router(devices.router)
 app.include_router(comms.router)
 app.include_router(scan.router)
+app.include_router(adsb.router)
 
 @app.get("/")
 async def serve_frontend():

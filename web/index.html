@@ -637,7 +637,229 @@
                 </div>
             );
         }
-        function AdsbPage()       { return <PageStub title="ADS-B"      icon="✈" description="Aircraft tracker with Leaflet map — Phase 5." />; }
+        // ═══════════════════════════════════════════════════════
+        // PHASE 5: ADS-B AIRCRAFT TRACKER
+        // ═══════════════════════════════════════════════════════
+
+        const FLL_CENTER = [26.07, -80.15];
+        const DURATION_OPTIONS = [15, 30, 60, 120];
+
+        function AdsbPage() {
+            const [duration,  setDuration]  = useState(30);
+            const [tracking,  setTracking]  = useState(false);
+            const [phase,     setPhase]     = useState(null);   // 'capturing' | 'decoding' | 'done'
+            const [aircraft,  setAircraft]  = useState([]);
+            const [stats,     setStats]     = useState(null);
+            const [error,     setError]     = useState(null);
+            const wsRef  = useRef(null);
+            const mapRef = useRef(null);       // Leaflet map instance
+            const markersRef = useRef({});     // icao -> L.circleMarker
+
+            // Init Leaflet map once
+            useEffect(() => {
+                if (mapRef.current) return;
+                const map = L.map('adsb-map', { center: FLL_CENTER, zoom: 10 });
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap contributors',
+                    maxZoom: 18,
+                }).addTo(map);
+                mapRef.current = map;
+                // Fix Leaflet sizing when tab becomes visible
+                setTimeout(() => map.invalidateSize(), 100);
+            }, []);
+
+            // Cleanup WS on unmount
+            useEffect(() => () => wsRef.current?.close(), []);
+
+            function plotAircraft(list) {
+                const map = mapRef.current;
+                if (!map) return;
+
+                // Remove stale markers
+                const newIcaos = new Set(list.map(a => a.icao));
+                Object.keys(markersRef.current).forEach(icao => {
+                    if (!newIcaos.has(icao)) {
+                        markersRef.current[icao].remove();
+                        delete markersRef.current[icao];
+                    }
+                });
+
+                const bounds = [];
+                list.forEach(ac => {
+                    if (ac.lat == null || ac.lon == null) return;
+                    bounds.push([ac.lat, ac.lon]);
+                    const label = ac.callsign || ac.icao;
+                    const popupHtml = `
+                        <div style="font-family:monospace;font-size:12px;line-height:1.6">
+                            <b>${ac.icao}</b>${ac.callsign ? ' — ' + ac.callsign : ''}<br/>
+                            ${ac.alt != null ? 'Alt: ' + ac.alt.toLocaleString() + ' ft<br/>' : ''}
+                            ${ac.speed != null ? 'Speed: ' + Math.round(ac.speed) + ' kt<br/>' : ''}
+                            ${ac.heading != null ? 'Hdg: ' + Math.round(ac.heading) + '°<br/>' : ''}
+                            Pos: ${ac.lat.toFixed(4)}, ${ac.lon.toFixed(4)}
+                        </div>`;
+
+                    if (markersRef.current[ac.icao]) {
+                        markersRef.current[ac.icao]
+                            .setLatLng([ac.lat, ac.lon])
+                            .setPopupContent(popupHtml);
+                    } else {
+                        const m = L.circleMarker([ac.lat, ac.lon], {
+                            radius: 7,
+                            color: '#00d2ff',
+                            fillColor: '#0f3460',
+                            fillOpacity: 0.9,
+                            weight: 2,
+                        }).bindPopup(popupHtml)
+                          .bindTooltip(label, { permanent: true, direction: 'top',
+                              className: 'adsb-label',
+                              offset: [0, -10] })
+                          .addTo(map);
+                        markersRef.current[ac.icao] = m;
+                    }
+                });
+
+                if (bounds.length > 0) {
+                    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
+                }
+            }
+
+            function startTracking() {
+                if (wsRef.current) return;
+                setTracking(true);
+                setPhase('connecting');
+                setError(null);
+                setAircraft([]);
+                setStats(null);
+
+                const ws = new WebSocket(`ws://${location.host}/ws/adsb`);
+                wsRef.current = ws;
+
+                ws.onopen = () => {
+                    ws.send(JSON.stringify({ duration }));
+                    setPhase('capturing');
+                };
+
+                ws.onmessage = (e) => {
+                    const msg = JSON.parse(e.data);
+                    if (msg.type === 'status') {
+                        setPhase(msg.phase);
+                    } else if (msg.type === 'done') {
+                        const sorted = [...msg.aircraft].sort((a, b) => (b.alt ?? -1) - (a.alt ?? -1));
+                        setAircraft(sorted);
+                        setStats({ aircraft: msg.aircraft_count, msgs: msg.msg_count, withPos: msg.with_position });
+                        setPhase('done');
+                        plotAircraft(sorted);
+                    } else if (msg.type === 'error') {
+                        setError(msg.message);
+                        setPhase(null);
+                    }
+                };
+
+                ws.onclose = () => {
+                    wsRef.current = null;
+                    setTracking(false);
+                    if (phase !== 'done') setPhase(null);
+                };
+            }
+
+            function stopTracking() {
+                wsRef.current?.close();
+            }
+
+            const phaseColors = { capturing: '#f59e0b', decoding: '#00d2ff', done: '#22c55e', connecting: '#6b7280' };
+            const phaseLabels = { capturing: `Capturing ${duration}s…`, decoding: 'Decoding…', done: 'Done', connecting: 'Connecting…' };
+
+            return (
+                <div className="flex flex-col gap-4" style={{ maxWidth: '900px' }}>
+
+                    {/* Controls */}
+                    <div className="rounded-lg p-4 flex flex-wrap items-center gap-4" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+                        <div className="flex items-center gap-2 text-sm text-gray-400">
+                            Duration:
+                            {DURATION_OPTIONS.map(d => (
+                                <button key={d}
+                                    onClick={() => setDuration(d)}
+                                    disabled={tracking}
+                                    className="px-2.5 py-1 rounded text-xs transition-colors"
+                                    style={{
+                                        background: duration === d ? '#00d2ff' : '#0f3460',
+                                        color: duration === d ? '#0f3460' : '#94a3b8',
+                                        border: '1px solid #1e3a5f',
+                                    }}
+                                >{d}s</button>
+                            ))}
+                        </div>
+                        <button
+                            onClick={tracking ? stopTracking : startTracking}
+                            className="px-5 py-1.5 rounded text-sm font-semibold ml-auto transition-colors"
+                            style={{
+                                background: tracking ? '#4a1e2a' : '#00d2ff',
+                                color: tracking ? '#e94560' : '#0f3460',
+                                border: tracking ? '1px solid #e94560' : 'none',
+                            }}
+                        >
+                            {tracking ? 'Stop' : 'Start Tracking'}
+                        </button>
+                    </div>
+
+                    {/* Status bar */}
+                    {phase && (
+                        <div className="flex items-center gap-3 px-4 py-2 rounded text-sm" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+                            <span className="w-2 h-2 rounded-full" style={{ background: phaseColors[phase] ?? '#6b7280',
+                                boxShadow: phase !== 'done' ? `0 0 6px ${phaseColors[phase]}` : 'none' }} />
+                            <span style={{ color: phaseColors[phase] ?? '#6b7280' }}>{phaseLabels[phase] ?? phase}</span>
+                            {stats && (
+                                <span className="ml-auto text-gray-500 text-xs" style={{ fontFamily: 'monospace' }}>
+                                    {stats.aircraft} aircraft · {stats.msgs} msgs · {stats.withPos} with position
+                                </span>
+                            )}
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="text-sm px-4 py-2 rounded" style={{ background: '#2a1e2e', color: '#e94560', border: '1px solid #e9456044' }}>
+                            ⚠ {error}
+                        </div>
+                    )}
+
+                    {/* Map */}
+                    <div
+                        id="adsb-map"
+                        className="rounded-lg overflow-hidden"
+                        style={{ height: '350px', border: '1px solid #1e3a5f' }}
+                    />
+
+                    {/* Aircraft table */}
+                    {aircraft.length > 0 && (
+                        <div className="rounded-lg overflow-hidden" style={{ border: '1px solid #1e3a5f' }}>
+                            <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                                <thead>
+                                    <tr style={{ background: '#0f3460', color: '#94a3b8' }}>
+                                        {['ICAO','Callsign','Alt (ft)','Speed (kt)','Hdg','Position'].map(h => (
+                                            <th key={h} className="text-left px-3 py-2 font-medium">{h}</th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {aircraft.map((ac, i) => (
+                                        <tr key={ac.icao} style={{ background: i % 2 === 0 ? '#16213e' : '#1a2540', borderTop: '1px solid #1e3a5f' }}>
+                                            <td className="px-3 py-1.5 font-bold" style={{ color: '#00d2ff', fontFamily: 'monospace' }}>{ac.icao}</td>
+                                            <td className="px-3 py-1.5 text-gray-300" style={{ fontFamily: 'monospace' }}>{ac.callsign || '—'}</td>
+                                            <td className="px-3 py-1.5 text-gray-300" style={{ fontFamily: 'monospace' }}>{ac.alt != null ? ac.alt.toLocaleString() : '—'}</td>
+                                            <td className="px-3 py-1.5 text-gray-300" style={{ fontFamily: 'monospace' }}>{ac.speed != null ? Math.round(ac.speed) : '—'}</td>
+                                            <td className="px-3 py-1.5 text-gray-300" style={{ fontFamily: 'monospace' }}>{ac.heading != null ? Math.round(ac.heading) + '°' : '—'}</td>
+                                            <td className="px-3 py-1.5 text-gray-400" style={{ fontFamily: 'monospace' }}>
+                                                {ac.lat != null ? `${ac.lat.toFixed(3)}, ${ac.lon.toFixed(3)}` : '—'}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            );
+        }
         function FmPage()         { return <PageStub title="FM Radio"   icon="◉" description="Capture and playback FM stations — Phase 6." />; }
         function SignalsPage()    { return <PageStub title="Signals"    icon="∿" description="IQ capture envelope viewer — Phase 8." />; }
         function FlipperPage()    { return <PageStub title="Flipper"    icon="⌨" description="Encode/decode Flipper Zero .sub files — Phase 7." />; }

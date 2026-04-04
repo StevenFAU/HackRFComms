@@ -358,7 +358,14 @@ def _downsample_to_halfbits(envelope: np.ndarray, half_bit_samples: int) -> np.n
     return reshaped.mean(axis=1)
 
 
-def decode_iq(envelope: np.ndarray, sample_rate: int) -> list[str]:
+def decode_iq(envelope: np.ndarray, sample_rate: int,
+              on_aircraft=None) -> list[str]:
+    """Process envelope to find and decode ADS-B messages.
+
+    on_aircraft: optional callable(aircraft_dict, msg_count) called once
+                 after decoding completes. When None, prints summary to
+                 stdout as before. CLI path is unchanged.
+    """
     """Process envelope to find and decode ADS-B messages."""
     spu = sample_rate / 1_000_000  # samples per µs
     half_bit_samples = max(int(round(0.5 * spu)), 1)  # samples per 0.5 µs
@@ -457,7 +464,10 @@ def decode_iq(envelope: np.ndarray, sample_rate: int) -> list[str]:
     print(f"[ADS-B] Unique aircraft: {len(aircraft)}")
     print(f"[ADS-B] Decoded messages: {len(messages)}")
 
-    if aircraft:
+    if on_aircraft is not None:
+        # Web path: hand aircraft dict to caller instead of printing
+        on_aircraft(aircraft, len(messages))
+    elif aircraft:
         print("\n[ADS-B] Aircraft summary:")
         for icao, ac in sorted(aircraft.items()):
             info = f"  {icao}"
