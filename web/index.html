@@ -37,8 +37,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 
-    <!-- Recharts for spectrum plots (Phase 4) — unpkg is more reliable for UMD bundles -->
-    <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
+
 
     <style>
         body { margin: 0; background: #1a1a2e; color: #e2e8f0; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
@@ -451,7 +450,7 @@
             );
         }
         // ═══════════════════════════════════════════════════════
-        // PHASE 4: SPECTRUM SCANNER
+        // PHASE 4: SPECTRUM SCANNER — Canvas-based chart (no CDN deps)
         // ═══════════════════════════════════════════════════════
 
         const SCAN_PRESETS = [
@@ -461,43 +460,134 @@
             { label: 'Full',     start: 1,    end: 6000 },
         ];
 
-        // Known band shading regions [start_mhz, end_mhz, label, color]
         const KNOWN_BANDS = [
-            [88,   108,  'FM',   '#00d2ff22'],
-            [433,  435,  'ISM',  '#22c55e22'],
-            [902,  928,  'ISM',  '#22c55e22'],
-            [2400, 2500, 'WiFi', '#f59e0b22'],
-            [5150, 5850, 'WiFi', '#f59e0b22'],
-            [700,  900,  'Cell', '#a855f722'],
-            [1700, 2200, 'Cell', '#a855f722'],
+            [88,   108,  'FM',   'rgba(0,210,255,0.08)'],
+            [433,  435,  'ISM',  'rgba(34,197,94,0.08)'],
+            [902,  928,  'ISM',  'rgba(34,197,94,0.08)'],
+            [700,  900,  'Cell', 'rgba(168,85,247,0.08)'],
+            [1700, 2200, 'Cell', 'rgba(168,85,247,0.08)'],
+            [2400, 2500, 'WiFi', 'rgba(245,158,11,0.08)'],
+            [5150, 5850, 'WiFi', 'rgba(245,158,11,0.08)'],
         ];
+
+        function drawSpectrum(canvas, data, peak) {
+            if (!canvas || !data || data.length === 0) return;
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width;
+            const H = canvas.height;
+            const PAD = { top: 12, right: 16, bottom: 32, left: 48 };
+            const CW = W - PAD.left - PAD.right;
+            const CH = H - PAD.top - PAD.bottom;
+
+            const freqs  = data.map(d => d.freq);
+            const powers = data.map(d => d.power);
+            const fMin = freqs[0], fMax = freqs[freqs.length - 1];
+            const pMin = Math.min(...powers) - 2;
+            const pMax = Math.max(...powers) + 2;
+            const fRange = fMax - fMin || 1;
+            const pRange = pMax - pMin || 1;
+
+            const fx = f  => PAD.left + ((f - fMin) / fRange) * CW;
+            const py = p  => PAD.top  + ((pMax - p)  / pRange) * CH;
+
+            // Background
+            ctx.fillStyle = '#0f1a2e';
+            ctx.fillRect(0, 0, W, H);
+
+            // Band shading
+            KNOWN_BANDS.forEach(([bs, be, label, color]) => {
+                const x1 = Math.max(fx(bs), PAD.left);
+                const x2 = Math.min(fx(be), PAD.left + CW);
+                if (x2 <= x1) return;
+                ctx.fillStyle = color;
+                ctx.fillRect(x1, PAD.top, x2 - x1, CH);
+                ctx.fillStyle = 'rgba(150,150,150,0.4)';
+                ctx.font = '9px monospace';
+                ctx.fillText(label, x1 + 2, PAD.top + 10);
+            });
+
+            // Grid lines
+            ctx.strokeStyle = '#1e3a5f';
+            ctx.lineWidth = 1;
+            const yTicks = 5;
+            for (let i = 0; i <= yTicks; i++) {
+                const p = pMin + (pRange * i / yTicks);
+                const y = py(p);
+                ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + CW, y); ctx.stroke();
+                ctx.fillStyle = '#4b5563';
+                ctx.font = '10px monospace';
+                ctx.textAlign = 'right';
+                ctx.fillText(p.toFixed(0), PAD.left - 4, y + 3);
+            }
+            const xTicks = Math.min(8, data.length);
+            for (let i = 0; i <= xTicks; i++) {
+                const f = fMin + (fRange * i / xTicks);
+                const x = fx(f);
+                ctx.beginPath(); ctx.moveTo(x, PAD.top); ctx.lineTo(x, PAD.top + CH); ctx.stroke();
+                ctx.fillStyle = '#4b5563';
+                ctx.font = '10px monospace';
+                ctx.textAlign = 'center';
+                ctx.fillText(f.toFixed(0), x, PAD.top + CH + 14);
+            }
+
+            // Axis labels
+            ctx.fillStyle = '#6b7280';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('MHz', PAD.left + CW / 2, H - 2);
+            ctx.save();
+            ctx.translate(10, PAD.top + CH / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.fillText('dB', 0, 0);
+            ctx.restore();
+
+            // Peak reference line
+            if (peak) {
+                const px2 = fx(peak.freq);
+                ctx.strokeStyle = 'rgba(233,69,96,0.7)';
+                ctx.setLineDash([4, 3]);
+                ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.moveTo(px2, PAD.top); ctx.lineTo(px2, PAD.top + CH); ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            // Spectrum fill
+            ctx.beginPath();
+            ctx.moveTo(fx(freqs[0]), py(powers[0]));
+            for (let i = 1; i < data.length; i++) ctx.lineTo(fx(freqs[i]), py(powers[i]));
+            ctx.lineTo(fx(freqs[freqs.length - 1]), PAD.top + CH);
+            ctx.lineTo(fx(freqs[0]), PAD.top + CH);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(0,210,255,0.07)';
+            ctx.fill();
+
+            // Spectrum line
+            ctx.beginPath();
+            ctx.moveTo(fx(freqs[0]), py(powers[0]));
+            for (let i = 1; i < data.length; i++) ctx.lineTo(fx(freqs[i]), py(powers[i]));
+            ctx.strokeStyle = '#00d2ff';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
 
         function ScannerPage() {
             const [startMhz, setStartMhz] = useState(900);
             const [endMhz,   setEndMhz]   = useState(930);
             const [fine,     setFine]     = useState(false);
             const [scanning, setScanning] = useState(false);
-            const [data,     setData]     = useState(null);   // [{freq, power}]
+            const [data,     setData]     = useState(null);
             const [error,    setError]    = useState(null);
-            const [peak,     setPeak]     = useState(null);   // {freq, power}
-
-            const { LineChart, Line, XAxis, YAxis, CartesianGrid,
-                    Tooltip, ResponsiveContainer, ReferenceLine,
-                    ReferenceArea } = (window.Recharts || {});
+            const [peak,     setPeak]     = useState(null);
+            const [tooltip,  setTooltip]  = useState(null); // {x, y, freq, power}
+            const canvasRef = useRef(null);
 
             function applyPreset(p) {
-                setStartMhz(p.start);
-                setEndMhz(p.end);
-                setData(null);
-                setPeak(null);
-                setError(null);
+                setStartMhz(p.start); setEndMhz(p.end);
+                setData(null); setPeak(null); setError(null);
             }
 
             async function runScan() {
-                setScanning(true);
-                setError(null);
-                setData(null);
-                setPeak(null);
+                setScanning(true); setError(null); setData(null); setPeak(null);
                 try {
                     const res = await fetch('/api/scan', {
                         method: 'POST',
@@ -506,161 +596,107 @@
                     });
                     const json = await res.json();
                     if (json.error) { setError(json.error); return; }
-                    if (!json.data || json.data.length === 0) { setError('No data returned.'); return; }
+                    if (!json.data?.length) { setError('No data returned.'); return; }
                     setData(json.data);
-                    const top = json.data.reduce((a, b) => b.power > a.power ? b : a);
-                    setPeak(top);
-                } catch {
-                    setError('Scan request failed.');
-                } finally {
-                    setScanning(false);
-                }
+                    setPeak(json.data.reduce((a, b) => b.power > a.power ? b : a));
+                } catch { setError('Scan request failed.'); }
+                finally { setScanning(false); }
             }
 
-            // Only show bands that overlap the current scan range
-            const visibleBands = data ? KNOWN_BANDS.filter(
-                ([s, e]) => s < endMhz && e > startMhz
-            ) : [];
+            useEffect(() => {
+                if (canvasRef.current) drawSpectrum(canvasRef.current, data, peak);
+            }, [data, peak]);
+
+            function handleMouseMove(e) {
+                if (!data || !canvasRef.current) return;
+                const rect = canvasRef.current.getBoundingClientRect();
+                const W = canvasRef.current.width;
+                const PAD_LEFT = 48, PAD_RIGHT = 16;
+                const CW = W - PAD_LEFT - PAD_RIGHT;
+                const scaleX = W / rect.width;
+                const xPx = (e.clientX - rect.left) * scaleX;
+                if (xPx < PAD_LEFT || xPx > PAD_LEFT + CW) { setTooltip(null); return; }
+                const frac = (xPx - PAD_LEFT) / CW;
+                const freqs = data.map(d => d.freq);
+                const fMin = freqs[0], fMax = freqs[freqs.length - 1];
+                const freq = fMin + frac * (fMax - fMin);
+                const nearest = data.reduce((a, b) => Math.abs(b.freq - freq) < Math.abs(a.freq - freq) ? b : a);
+                setTooltip({ x: e.clientX - rect.left, freq: nearest.freq, power: nearest.power });
+            }
 
             return (
                 <div className="flex flex-col gap-4 max-w-4xl">
-
-                    {/* Controls */}
                     <div className="rounded-lg p-4 flex flex-col gap-4" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
-
-                        {/* Preset buttons */}
                         <div className="flex flex-wrap gap-2">
                             {SCAN_PRESETS.map(p => (
-                                <button
-                                    key={p.label}
-                                    onClick={() => applyPreset(p)}
+                                <button key={p.label} onClick={() => applyPreset(p)}
                                     className="text-xs px-3 py-1.5 rounded transition-colors"
-                                    style={{
-                                        background: startMhz === p.start && endMhz === p.end ? '#00d2ff' : '#0f3460',
-                                        color: startMhz === p.start && endMhz === p.end ? '#0f3460' : '#94a3b8',
-                                        border: '1px solid #1e3a5f',
-                                    }}
-                                >
+                                    style={{ background: startMhz===p.start&&endMhz===p.end?'#00d2ff':'#0f3460', color: startMhz===p.start&&endMhz===p.end?'#0f3460':'#94a3b8', border:'1px solid #1e3a5f' }}>
                                     {p.label}
                                 </button>
                             ))}
                         </div>
-
-                        {/* Range + options */}
                         <div className="flex flex-wrap items-center gap-4">
                             <div className="flex items-center gap-2 text-sm">
                                 <label className="text-gray-400">Start</label>
-                                <input
-                                    type="number"
-                                    value={startMhz}
-                                    onChange={e => setStartMhz(Number(e.target.value))}
+                                <input type="number" value={startMhz} onChange={e=>setStartMhz(Number(e.target.value))}
                                     className="w-24 px-2 py-1 rounded text-sm outline-none"
-                                    style={{ background: '#0f3460', border: '1px solid #1e3a5f', color: '#e2e8f0', fontFamily: 'monospace' }}
-                                />
+                                    style={{ background:'#0f3460', border:'1px solid #1e3a5f', color:'#e2e8f0', fontFamily:'monospace' }} />
                                 <span className="text-gray-500">MHz</span>
                             </div>
                             <div className="flex items-center gap-2 text-sm">
                                 <label className="text-gray-400">End</label>
-                                <input
-                                    type="number"
-                                    value={endMhz}
-                                    onChange={e => setEndMhz(Number(e.target.value))}
+                                <input type="number" value={endMhz} onChange={e=>setEndMhz(Number(e.target.value))}
                                     className="w-24 px-2 py-1 rounded text-sm outline-none"
-                                    style={{ background: '#0f3460', border: '1px solid #1e3a5f', color: '#e2e8f0', fontFamily: 'monospace' }}
-                                />
+                                    style={{ background:'#0f3460', border:'1px solid #1e3a5f', color:'#e2e8f0', fontFamily:'monospace' }} />
                                 <span className="text-gray-500">MHz</span>
                             </div>
                             <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer select-none">
-                                <input
-                                    type="checkbox"
-                                    checked={fine}
-                                    onChange={e => setFine(e.target.checked)}
-                                    style={{ accentColor: '#00d2ff' }}
-                                />
+                                <input type="checkbox" checked={fine} onChange={e=>setFine(e.target.checked)} style={{ accentColor:'#00d2ff' }} />
                                 Fine (100 kHz bins)
                             </label>
-                            <button
-                                onClick={runScan}
-                                disabled={scanning}
-                                className="px-5 py-1.5 rounded text-sm font-semibold transition-colors ml-auto"
-                                style={{
-                                    background: scanning ? '#1e3a5f' : '#00d2ff',
-                                    color: scanning ? '#4a6a8f' : '#0f3460',
-                                    cursor: scanning ? 'not-allowed' : 'pointer',
-                                }}
-                            >
+                            <button onClick={runScan} disabled={scanning} className="px-5 py-1.5 rounded text-sm font-semibold transition-colors ml-auto"
+                                style={{ background:scanning?'#1e3a5f':'#00d2ff', color:scanning?'#4a6a8f':'#0f3460', cursor:scanning?'not-allowed':'pointer' }}>
                                 {scanning ? 'Scanning…' : 'Scan'}
                             </button>
                         </div>
                     </div>
 
-                    {/* Recharts not loaded */}
-                    {!LineChart && (
-                        <div className="text-sm px-4 py-2 rounded" style={{ background: '#2a1e2e', color: '#e94560', border: '1px solid #e9456044' }}>
-                            ⚠ Recharts library failed to load — check your internet connection and refresh.
-                        </div>
-                    )}
-
-                    {/* Error */}
                     {error && (
-                        <div className="text-sm px-4 py-2 rounded" style={{ background: '#2a1e2e', color: '#e94560', border: '1px solid #e9456044' }}>
-                            ⚠ {error}
-                        </div>
+                        <div className="text-sm px-4 py-2 rounded" style={{ background:'#2a1e2e', color:'#e94560', border:'1px solid #e9456044' }}>⚠ {error}</div>
                     )}
-
-                    {/* Loading */}
                     {scanning && (
-                        <div className="text-sm text-gray-500 text-center py-8">
-                            Sweeping {startMhz}–{endMhz} MHz…
-                        </div>
+                        <div className="text-sm text-gray-500 text-center py-8">Sweeping {startMhz}–{endMhz} MHz…</div>
                     )}
 
-                    {/* Peak annotation */}
                     {peak && (
-                        <div className="text-xs px-4 py-2 rounded flex gap-6" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+                        <div className="text-xs px-4 py-2 rounded flex gap-6" style={{ background:'#16213e', border:'1px solid #1e3a5f' }}>
                             <span className="text-gray-500">Peak</span>
-                            <span style={{ color: '#00d2ff', fontFamily: 'monospace' }}>{peak.freq.toFixed(3)} MHz</span>
-                            <span style={{ color: '#e94560', fontFamily: 'monospace' }}>{peak.power.toFixed(1)} dB</span>
+                            <span style={{ color:'#00d2ff', fontFamily:'monospace' }}>{peak.freq.toFixed(3)} MHz</span>
+                            <span style={{ color:'#e94560', fontFamily:'monospace' }}>{peak.power.toFixed(1)} dB</span>
                         </div>
                     )}
 
-                    {/* Chart */}
-                    {data && LineChart && (
-                        <div className="rounded-lg p-4" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
-                            <ResponsiveContainer width="100%" height={300}>
-                                <LineChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" />
-                                    <XAxis
-                                        dataKey="freq"
-                                        tickFormatter={v => `${v.toFixed(0)}`}
-                                        tick={{ fill: '#6b7280', fontSize: 11, fontFamily: 'monospace' }}
-                                        label={{ value: 'MHz', position: 'insideBottomRight', offset: -5, fill: '#6b7280', fontSize: 11 }}
-                                    />
-                                    <YAxis
-                                        tick={{ fill: '#6b7280', fontSize: 11, fontFamily: 'monospace' }}
-                                        label={{ value: 'dB', angle: -90, position: 'insideLeft', fill: '#6b7280', fontSize: 11 }}
-                                    />
-                                    <Tooltip
-                                        contentStyle={{ background: '#0f3460', border: '1px solid #1e3a5f', borderRadius: '6px', fontFamily: 'monospace', fontSize: '12px' }}
-                                        labelFormatter={v => `${Number(v).toFixed(3)} MHz`}
-                                        formatter={v => [`${Number(v).toFixed(1)} dB`, 'Power']}
-                                    />
-                                    {visibleBands.map(([s, e, label, color]) => (
-                                        <ReferenceArea key={label + s} x1={s} x2={e} fill={color} label={{ value: label, position: 'top', fill: '#6b7280', fontSize: 10 }} />
-                                    ))}
-                                    {peak && (
-                                        <ReferenceLine x={peak.freq} stroke="#e94560" strokeDasharray="4 2" />
-                                    )}
-                                    <Line
-                                        type="monotone"
-                                        dataKey="power"
-                                        stroke="#00d2ff"
-                                        dot={false}
-                                        strokeWidth={1.5}
-                                        isAnimationActive={false}
-                                    />
-                                </LineChart>
-                            </ResponsiveContainer>
+                    {data && (
+                        <div className="rounded-lg p-3 flex flex-col gap-1" style={{ background:'#16213e', border:'1px solid #1e3a5f' }}>
+                            <div className="relative">
+                                <canvas ref={canvasRef} width={860} height={260}
+                                    className="w-full rounded" style={{ cursor:'crosshair' }}
+                                    onMouseMove={handleMouseMove} onMouseLeave={() => setTooltip(null)} />
+                                {tooltip && (
+                                    <div className="absolute top-2 pointer-events-none px-2 py-1 rounded text-xs"
+                                        style={{ left: Math.min(tooltip.x + 10, 700), background:'#0f3460', border:'1px solid #1e3a5f', fontFamily:'monospace', color:'#e2e8f0' }}>
+                                        {tooltip.freq.toFixed(3)} MHz · {tooltip.power.toFixed(1)} dB
+                                    </div>
+                                )}
+                            </div>
+                            <div className="flex gap-4 text-xs" style={{ color:'#4b5563' }}>
+                                <span><span style={{color:'rgba(0,210,255,0.4)'}}>█</span> FM</span>
+                                <span><span style={{color:'rgba(34,197,94,0.4)'}}>█</span> ISM</span>
+                                <span><span style={{color:'rgba(168,85,247,0.4)'}}>█</span> Cell</span>
+                                <span><span style={{color:'rgba(245,158,11,0.4)'}}>█</span> WiFi</span>
+                                <span><span style={{color:'rgba(233,69,96,0.7)'}}>╌</span> Peak</span>
+                            </div>
                         </div>
                     )}
                 </div>
