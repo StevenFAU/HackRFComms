@@ -244,7 +244,190 @@
                 </div>
             );
         }
-        function CommsPage()      { return <PageStub title="Comms"      icon="⇄" description="OOK send/receive with HackRF — Phase 3." />; }
+        // ═══════════════════════════════════════════════════════
+        // PHASE 3: OOK COMMS PANEL
+        // ═══════════════════════════════════════════════════════
+
+        function CommsPage() {
+            const [messages, setMessages]   = useState([]);   // {id, dir, text, ts}
+            const [input, setInput]         = useState('');
+            const [sending, setSending]     = useState(false);
+            const [listening, setListening] = useState(false);
+            const [wsStatus, setWsStatus]   = useState('idle'); // idle | connecting | open | error
+            const wsRef   = useRef(null);
+            const logRef  = useRef(null);
+            const msgId   = useRef(0);
+
+            // Auto-scroll log on new messages
+            useEffect(() => {
+                if (logRef.current) {
+                    logRef.current.scrollTop = logRef.current.scrollHeight;
+                }
+            }, [messages]);
+
+            // Cleanup WS on unmount
+            useEffect(() => () => wsRef.current?.close(), []);
+
+            function addMsg(dir, text, ts) {
+                setMessages(prev => [...prev, { id: msgId.current++, dir, text, ts: ts || new Date().toISOString() }]);
+            }
+
+            async function handleSend() {
+                const text = input.trim();
+                if (!text || sending) return;
+                setSending(true);
+                addMsg('sent', text);
+                setInput('');
+                try {
+                    const res = await fetch('/api/comms/send', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: text }),
+                    });
+                    const data = await res.json();
+                    if (!data.success) {
+                        addMsg('system', data.error || 'Send failed — no ACK received.');
+                    }
+                } catch {
+                    addMsg('system', 'Send request failed.');
+                } finally {
+                    setSending(false);
+                }
+            }
+
+            function handleKeyDown(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                }
+            }
+
+            function startListening() {
+                if (wsRef.current) return;
+                setWsStatus('connecting');
+                const ws = new WebSocket(`ws://${location.host}/ws/comms`);
+                wsRef.current = ws;
+
+                ws.onopen  = () => { setListening(true); setWsStatus('open'); };
+                ws.onclose = () => { wsRef.current = null; setListening(false); setWsStatus('idle'); };
+                ws.onerror = () => { setWsStatus('error'); };
+                ws.onmessage = (e) => {
+                    try {
+                        const msg = JSON.parse(e.data);
+                        addMsg('received', msg.data, msg.timestamp);
+                    } catch {}
+                };
+            }
+
+            function stopListening() {
+                wsRef.current?.close();
+            }
+
+            const wsColors = { idle: '#6b7280', connecting: '#f59e0b', open: '#22c55e', error: '#e94560' };
+            const wsLabels = { idle: 'idle', connecting: 'connecting…', open: 'listening', error: 'error' };
+
+            return (
+                <div className="flex flex-col gap-4 max-w-2xl h-full" style={{ maxHeight: 'calc(100vh - 120px)' }}>
+
+                    {/* Listen toggle */}
+                    <div className="flex items-center justify-between rounded-lg px-4 py-3" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+                        <div className="flex items-center gap-2 text-sm">
+                            <span
+                                className="w-2 h-2 rounded-full"
+                                style={{ background: wsColors[wsStatus], boxShadow: wsStatus === 'open' ? `0 0 5px ${wsColors.open}` : 'none' }}
+                            />
+                            <span className="text-gray-400">RX status:</span>
+                            <span style={{ color: wsColors[wsStatus] }}>{wsLabels[wsStatus]}</span>
+                        </div>
+                        <button
+                            onClick={listening ? stopListening : startListening}
+                            className="text-xs px-3 py-1.5 rounded font-semibold transition-colors"
+                            style={{
+                                background: listening ? '#4a1e2a' : '#1e3a5f',
+                                color: listening ? '#e94560' : '#00d2ff',
+                                border: `1px solid ${listening ? '#e94560' : '#00d2ff'}`,
+                            }}
+                        >
+                            {listening ? 'Stop Listening' : 'Start Listening'}
+                        </button>
+                    </div>
+
+                    {/* Message log */}
+                    <div
+                        ref={logRef}
+                        className="flex-1 overflow-y-auto rounded-lg p-3 flex flex-col gap-2"
+                        style={{ background: '#16213e', border: '1px solid #1e3a5f', minHeight: '200px' }}
+                    >
+                        {messages.length === 0 && (
+                            <div className="flex-1 flex items-center justify-center text-sm text-gray-600">
+                                No messages yet.
+                            </div>
+                        )}
+                        {messages.map(m => {
+                            const isSent   = m.dir === 'sent';
+                            const isSystem = m.dir === 'system';
+                            const ts = new Date(m.ts).toLocaleTimeString();
+
+                            if (isSystem) {
+                                return (
+                                    <div key={m.id} className="text-center text-xs py-1" style={{ color: '#e94560' }}>
+                                        ⚠ {m.text}
+                                    </div>
+                                );
+                            }
+
+                            return (
+                                <div key={m.id} className={`flex flex-col gap-0.5 ${isSent ? 'items-end' : 'items-start'}`}>
+                                    <div
+                                        className="px-3 py-2 rounded-lg text-sm max-w-xs break-words"
+                                        style={{
+                                            background: isSent ? '#1e3a5f' : '#1e3a2f',
+                                            color: isSent ? '#00d2ff' : '#22c55e',
+                                            fontFamily: 'monospace',
+                                        }}
+                                    >
+                                        {m.text}
+                                    </div>
+                                    <span className="text-xs text-gray-600">{ts}</span>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {/* Input */}
+                    <div className="flex gap-2">
+                        <input
+                            type="text"
+                            value={input}
+                            onChange={e => setInput(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder="Type a message… (Enter to send)"
+                            disabled={sending}
+                            className="flex-1 px-3 py-2 rounded text-sm outline-none"
+                            style={{
+                                background: '#16213e',
+                                border: '1px solid #1e3a5f',
+                                color: '#e2e8f0',
+                                fontFamily: 'monospace',
+                                opacity: sending ? 0.6 : 1,
+                            }}
+                        />
+                        <button
+                            onClick={handleSend}
+                            disabled={sending || !input.trim()}
+                            className="px-4 py-2 rounded text-sm font-semibold transition-colors"
+                            style={{
+                                background: sending || !input.trim() ? '#1e3a5f' : '#00d2ff',
+                                color: sending || !input.trim() ? '#4a6a8f' : '#0f3460',
+                                cursor: sending || !input.trim() ? 'not-allowed' : 'pointer',
+                            }}
+                        >
+                            {sending ? 'Sending…' : 'Send'}
+                        </button>
+                    </div>
+                </div>
+            );
+        }
         function ScannerPage()    { return <PageStub title="Scanner"    icon="⊶" description="Spectrum sweep with Recharts — Phase 4." />; }
         function AdsbPage()       { return <PageStub title="ADS-B"      icon="✈" description="Aircraft tracker with Leaflet map — Phase 5." />; }
         function FmPage()         { return <PageStub title="FM Radio"   icon="◉" description="Capture and playback FM stations — Phase 6." />; }
