@@ -1063,7 +1063,233 @@
                 </div>
             );
         }
-        function SignalsPage()    { return <PageStub title="Signals"    icon="∿" description="IQ capture envelope viewer — Phase 8." />; }
+        // ═══════════════════════════════════════════════════════
+        // PHASE 8: SIGNAL VISUALIZATION
+        // ═══════════════════════════════════════════════════════
+
+        function SignalsPage() {
+            const [files,     setFiles]     = useState([]);
+            const [selected,  setSelected]  = useState('');
+            const [loading,   setLoading]   = useState(false);
+            const [sigData,   setSigData]   = useState(null);
+            const [error,     setError]     = useState(null);
+            const canvasRef = useRef(null);
+
+            // Load file list on mount
+            useEffect(() => {
+                fetch('/api/signals/list')
+                    .then(r => r.json())
+                    .then(d => {
+                        setFiles(d.files || []);
+                        if (d.files?.length > 0) setSelected(d.files[0].name);
+                    })
+                    .catch(() => setError('Could not load file list.'));
+            }, []);
+
+            async function loadSignal(name) {
+                if (!name) return;
+                setLoading(true);
+                setError(null);
+                setSigData(null);
+                try {
+                    const res = await fetch(`/api/signals/${encodeURIComponent(name)}?downsample=1200`);
+                    const data = await res.json();
+                    if (data.error) { setError(data.error); return; }
+                    setSigData(data);
+                } catch {
+                    setError('Failed to load signal data.');
+                } finally {
+                    setLoading(false);
+                }
+            }
+
+            // Draw envelope on canvas whenever sigData changes
+            useEffect(() => {
+                if (!sigData || !canvasRef.current) return;
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d');
+                const W = canvas.width;
+                const H = canvas.height;
+                const env = sigData.envelope;
+                const max = Math.max(...env) || 1;
+
+                ctx.fillStyle = '#0f1a2e';
+                ctx.fillRect(0, 0, W, H);
+
+                // Draw burst regions first (behind the signal)
+                sigData.bursts.forEach(b => {
+                    const x1 = (b.start / env.length) * W;
+                    const x2 = (b.end   / env.length) * W;
+                    ctx.fillStyle = '#00d2ff0f';
+                    ctx.fillRect(x1, 0, x2 - x1, H);
+                });
+
+                // Threshold line
+                const threshY = H - (sigData.threshold / max) * H;
+                ctx.strokeStyle = '#e9456066';
+                ctx.setLineDash([4, 4]);
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(0, threshY);
+                ctx.lineTo(W, threshY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Envelope
+                ctx.strokeStyle = '#00d2ff';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                env.forEach((v, x) => {
+                    const px = (x / env.length) * W;
+                    const py = H - (v / max) * H;
+                    x === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+                });
+                ctx.stroke();
+
+                // Fill under the curve
+                ctx.lineTo(W, H);
+                ctx.lineTo(0, H);
+                ctx.closePath();
+                ctx.fillStyle = '#00d2ff0a';
+                ctx.fill();
+
+            }, [sigData]);
+
+            const selectedMeta = files.find(f => f.name === selected);
+
+            return (
+                <div className="flex flex-col gap-4" style={{ maxWidth: '800px' }}>
+
+                    {/* File picker */}
+                    <div className="rounded-lg p-4 flex flex-wrap items-center gap-4" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+                        <div className="flex items-center gap-3 flex-1">
+                            <label className="text-sm text-gray-400 flex-shrink-0">IQ File</label>
+                            <select
+                                value={selected}
+                                onChange={e => setSelected(e.target.value)}
+                                className="flex-1 px-3 py-1.5 rounded text-sm outline-none"
+                                style={{ background: '#0f3460', border: '1px solid #1e3a5f', color: '#e2e8f0', fontFamily: 'monospace' }}
+                            >
+                                {files.length === 0 && <option value="">No .iq files found</option>}
+                                {files.map(f => (
+                                    <option key={f.name} value={f.name}>
+                                        {f.name}  ({f.size_mb} MB)
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <button
+                            onClick={() => loadSignal(selected)}
+                            disabled={loading || !selected}
+                            className="px-5 py-1.5 rounded text-sm font-semibold transition-colors"
+                            style={{
+                                background: loading || !selected ? '#1e3a5f' : '#00d2ff',
+                                color: loading || !selected ? '#4a6a8f' : '#0f3460',
+                                cursor: loading || !selected ? 'not-allowed' : 'pointer',
+                            }}
+                        >
+                            {loading ? 'Loading…' : 'View'}
+                        </button>
+                    </div>
+
+                    {error && (
+                        <div className="text-sm px-4 py-2 rounded" style={{ background: '#2a1e2e', color: '#e94560', border: '1px solid #e9456044' }}>
+                            ⚠ {error}
+                        </div>
+                    )}
+
+                    {/* Metadata bar */}
+                    {sigData && (
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                            {[
+                                { label: 'Samples',     value: sigData.samples.toLocaleString() },
+                                { label: 'Duration',    value: `${sigData.duration_s} s` },
+                                { label: 'Sample Rate', value: `${(sigData.sample_rate / 1e6).toFixed(0)} MS/s` },
+                                { label: 'Bursts',      value: sigData.bursts.length },
+                            ].map(({ label, value }) => (
+                                <div key={label} className="rounded px-3 py-2 text-xs" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+                                    <div className="text-gray-500 mb-0.5">{label}</div>
+                                    <div className="text-gray-200" style={{ fontFamily: 'monospace' }}>{value}</div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Envelope canvas */}
+                    {sigData && (
+                        <div className="rounded-lg p-3 flex flex-col gap-2" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+                            <div className="flex items-center justify-between text-xs text-gray-500">
+                                <span>Envelope — {selected}</span>
+                                <span>
+                                    <span style={{ color: '#00d2ff' }}>━</span> signal &nbsp;
+                                    <span style={{ color: '#00d2ff', opacity: 0.3 }}>█</span> burst &nbsp;
+                                    <span style={{ color: '#e94560', opacity: 0.5 }}>╌</span> threshold
+                                </span>
+                            </div>
+                            <canvas
+                                ref={canvasRef}
+                                width={760}
+                                height={160}
+                                className="rounded w-full"
+                                style={{ border: '1px solid #1e3a5f' }}
+                            />
+                            <div className="flex justify-between text-xs text-gray-600" style={{ fontFamily: 'monospace' }}>
+                                <span>0 s</span>
+                                <span>{(sigData.duration_s / 2).toFixed(2)} s</span>
+                                <span>{sigData.duration_s} s</span>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Burst table */}
+                    {sigData && sigData.bursts.length > 0 && (
+                        <div className="rounded-lg overflow-hidden" style={{ border: '1px solid #1e3a5f' }}>
+                            <div className="px-4 py-2 text-xs font-semibold tracking-widest text-gray-500 uppercase" style={{ background: '#0f3460' }}>
+                                Detected Bursts
+                            </div>
+                            <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                                <thead>
+                                    <tr style={{ background: '#0f3460', color: '#94a3b8' }}>
+                                        <th className="text-left px-4 py-1.5 font-medium">#</th>
+                                        <th className="text-left px-4 py-1.5 font-medium">Start</th>
+                                        <th className="text-left px-4 py-1.5 font-medium">End</th>
+                                        <th className="text-left px-4 py-1.5 font-medium">Width (samples)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {sigData.bursts.slice(0, 20).map((b, i) => {
+                                        const samplesPerPoint = sigData.samples / sigData.envelope.length;
+                                        const toTime = idx => ((idx * samplesPerPoint) / sigData.sample_rate).toFixed(4);
+                                        return (
+                                            <tr key={i} style={{ background: i % 2 === 0 ? '#16213e' : '#1a2540', borderTop: '1px solid #1e3a5f' }}>
+                                                <td className="px-4 py-1.5 text-gray-500" style={{ fontFamily: 'monospace' }}>{i + 1}</td>
+                                                <td className="px-4 py-1.5 text-gray-300" style={{ fontFamily: 'monospace' }}>{toTime(b.start)} s</td>
+                                                <td className="px-4 py-1.5 text-gray-300" style={{ fontFamily: 'monospace' }}>{toTime(b.end)} s</td>
+                                                <td className="px-4 py-1.5 text-gray-300" style={{ fontFamily: 'monospace' }}>{Math.round((b.end - b.start) * samplesPerPoint).toLocaleString()}</td>
+                                            </tr>
+                                        );
+                                    })}
+                                    {sigData.bursts.length > 20 && (
+                                        <tr style={{ background: '#16213e', borderTop: '1px solid #1e3a5f' }}>
+                                            <td colSpan={4} className="px-4 py-1.5 text-gray-600 text-center">
+                                                …and {sigData.bursts.length - 20} more
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
+                    {/* inspectrum hint */}
+                    {selected && (
+                        <div className="text-xs px-4 py-2 rounded" style={{ background: '#16213e', border: '1px solid #1e3a5f', color: '#4a6a8f', fontFamily: 'monospace' }}>
+                            $ inspectrum ~/Projects/HackRFComms/iq_dumps/{selected}
+                        </div>
+                    )}
+                </div>
+            );
+        }
         // ═══════════════════════════════════════════════════════
         // PHASE 7: FLIPPER ZERO PANEL
         // ═══════════════════════════════════════════════════════
