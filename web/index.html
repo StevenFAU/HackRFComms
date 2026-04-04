@@ -860,7 +860,209 @@
                 </div>
             );
         }
-        function FmPage()         { return <PageStub title="FM Radio"   icon="◉" description="Capture and playback FM stations — Phase 6." />; }
+        // ═══════════════════════════════════════════════════════
+        // PHASE 6: FM RADIO
+        // ═══════════════════════════════════════════════════════
+
+        const FM_PRESETS = [
+            { label: '93.9', freq: 93.9 },
+            { label: '96.5', freq: 96.5 },
+            { label: '99.9', freq: 99.9 },
+            { label: '101.5', freq: 101.5 },
+            { label: '104.3', freq: 104.3 },
+        ];
+        const FM_DURATIONS = [5, 10, 30];
+
+        function FmPage() {
+            const [freq,     setFreq]     = useState(93.9);
+            const [duration, setDuration] = useState(10);
+            const [tuning,   setTuning]   = useState(false);
+            const [wavUrl,   setWavUrl]   = useState(null);
+            const [error,    setError]    = useState(null);
+            const [freqInfo, setFreqInfo] = useState(null);
+            const canvasRef  = useRef(null);
+            const audioRef   = useRef(null);
+
+            async function handleTune() {
+                setTuning(true);
+                setError(null);
+                setWavUrl(null);
+                setFreqInfo(null);
+                try {
+                    const res = await fetch('/api/fm/tune', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ freq, duration }),
+                    });
+                    const data = await res.json();
+                    if (!data.success) {
+                        setError(data.error || 'Tuning failed.');
+                    } else {
+                        setWavUrl(data.wav_url);
+                        setFreqInfo({ freq: data.freq, duration: data.duration });
+                    }
+                } catch {
+                    setError('Request failed.');
+                } finally {
+                    setTuning(false);
+                }
+            }
+
+            // Draw waveform on canvas once WAV URL is available
+            useEffect(() => {
+                if (!wavUrl || !canvasRef.current) return;
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d');
+
+                fetch(wavUrl)
+                    .then(r => r.arrayBuffer())
+                    .then(buf => new AudioContext().decodeAudioData(buf))
+                    .then(audioBuf => {
+                        const data = audioBuf.getChannelData(0);
+                        const W = canvas.width;
+                        const H = canvas.height;
+                        const step = Math.ceil(data.length / W);
+
+                        ctx.fillStyle = '#0f3460';
+                        ctx.fillRect(0, 0, W, H);
+
+                        ctx.strokeStyle = '#00d2ff';
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+
+                        for (let x = 0; x < W; x++) {
+                            let min = 1, max = -1;
+                            for (let s = x * step; s < (x + 1) * step && s < data.length; s++) {
+                                if (data[s] < min) min = data[s];
+                                if (data[s] > max) max = data[s];
+                            }
+                            const yMin = (1 - (min + 1) / 2) * H;
+                            const yMax = (1 - (max + 1) / 2) * H;
+                            x === 0 ? ctx.moveTo(x, yMin) : ctx.lineTo(x, yMin);
+                            ctx.lineTo(x, yMax);
+                        }
+                        ctx.stroke();
+
+                        // Center line
+                        ctx.strokeStyle = '#1e3a5f';
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.moveTo(0, H / 2);
+                        ctx.lineTo(W, H / 2);
+                        ctx.stroke();
+                    })
+                    .catch(() => {/* waveform optional — don't surface errors */});
+            }, [wavUrl]);
+
+            return (
+                <div className="flex flex-col gap-4" style={{ maxWidth: '600px' }}>
+
+                    {/* Tuner controls */}
+                    <div className="rounded-lg p-4 flex flex-col gap-4" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+
+                        {/* Preset buttons */}
+                        <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs text-gray-500 mr-1">Presets</span>
+                            {FM_PRESETS.map(p => (
+                                <button
+                                    key={p.freq}
+                                    onClick={() => setFreq(p.freq)}
+                                    className="text-xs px-2.5 py-1 rounded transition-colors"
+                                    style={{
+                                        background: freq === p.freq ? '#00d2ff' : '#0f3460',
+                                        color: freq === p.freq ? '#0f3460' : '#94a3b8',
+                                        border: '1px solid #1e3a5f',
+                                    }}
+                                >
+                                    {p.label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Freq + duration inputs */}
+                        <div className="flex flex-wrap items-center gap-4">
+                            <div className="flex items-center gap-2 text-sm">
+                                <label className="text-gray-400">Freq</label>
+                                <input
+                                    type="number"
+                                    value={freq}
+                                    min={88}
+                                    max={108}
+                                    step={0.1}
+                                    onChange={e => setFreq(parseFloat(e.target.value))}
+                                    className="w-24 px-2 py-1 rounded text-sm outline-none"
+                                    style={{ background: '#0f3460', border: '1px solid #1e3a5f', color: '#e2e8f0', fontFamily: 'monospace' }}
+                                />
+                                <span className="text-gray-500">MHz</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-sm text-gray-400">
+                                Duration:
+                                {FM_DURATIONS.map(d => (
+                                    <button
+                                        key={d}
+                                        onClick={() => setDuration(d)}
+                                        className="px-2.5 py-1 rounded text-xs transition-colors"
+                                        style={{
+                                            background: duration === d ? '#00d2ff' : '#0f3460',
+                                            color: duration === d ? '#0f3460' : '#94a3b8',
+                                            border: '1px solid #1e3a5f',
+                                        }}
+                                    >{d}s</button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <button
+                            onClick={handleTune}
+                            disabled={tuning}
+                            className="px-5 py-2 rounded text-sm font-semibold self-start transition-colors"
+                            style={{
+                                background: tuning ? '#1e3a5f' : '#00d2ff',
+                                color: tuning ? '#4a6a8f' : '#0f3460',
+                                cursor: tuning ? 'not-allowed' : 'pointer',
+                            }}
+                        >
+                            {tuning ? `Capturing ${duration}s…` : `Tune ${freq} MHz`}
+                        </button>
+                    </div>
+
+                    {/* Error */}
+                    {error && (
+                        <div className="text-sm px-4 py-2 rounded" style={{ background: '#2a1e2e', color: '#e94560', border: '1px solid #e9456044' }}>
+                            ⚠ {error}
+                        </div>
+                    )}
+
+                    {/* Player + waveform */}
+                    {wavUrl && (
+                        <div className="rounded-lg p-4 flex flex-col gap-3" style={{ background: '#16213e', border: '1px solid #1e3a5f' }}>
+                            {freqInfo && (
+                                <div className="text-xs text-gray-400" style={{ fontFamily: 'monospace' }}>
+                                    {freqInfo.freq} MHz · {freqInfo.duration}s capture
+                                </div>
+                            )}
+
+                            {/* Waveform canvas */}
+                            <canvas
+                                ref={canvasRef}
+                                width={560}
+                                height={80}
+                                className="rounded w-full"
+                                style={{ border: '1px solid #1e3a5f' }}
+                            />
+
+                            {/* HTML5 audio player */}
+                            <audio
+                                ref={audioRef}
+                                controls
+                                src={wavUrl}
+                                style={{ width: '100%', accentColor: '#00d2ff' }}
+                            />
+                        </div>
+                    )}
+                </div>
+            );
+        }
         function SignalsPage()    { return <PageStub title="Signals"    icon="∿" description="IQ capture envelope viewer — Phase 8." />; }
         function FlipperPage()    { return <PageStub title="Flipper"    icon="⌨" description="Encode/decode Flipper Zero .sub files — Phase 7." />; }
 
