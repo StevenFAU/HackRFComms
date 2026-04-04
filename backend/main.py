@@ -8,6 +8,7 @@ from routers import comms as comms_router
 from routers import scanner as scanner_router
 from routers import adsb as adsb_router
 from routers import fm as fm_router
+from routers import signals as signals_router
 
 app = FastAPI(title="HackRFComms API")
 
@@ -25,6 +26,7 @@ app.include_router(comms_router.router, prefix="/api")
 app.include_router(scanner_router.router, prefix="/api")
 app.include_router(adsb_router.router, prefix="/api")
 app.include_router(fm_router.router, prefix="/api")
+app.include_router(signals_router.router, prefix="/api")
 
 
 @app.get("/api/health")
