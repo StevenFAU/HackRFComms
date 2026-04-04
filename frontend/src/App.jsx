@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import DeviceDashboard from './components/DeviceDashboard'
 import CommsPanel from './components/CommsPanel'
 import SpectrumView from './components/SpectrumView'
+import AdsbMap from './components/AdsbMap'
 
 function ComingSoon({ page }) {
   return (
@@ -27,7 +28,7 @@ export default function App() {
       case 'scanner':
         return <SpectrumView />
       case 'adsb':
-        return <ComingSoon page="ADS-B" />
+        return <AdsbMap />
       case 'fm':
         return <ComingSoon page="FM Radio" />
       case 'signals':
